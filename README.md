@@ -222,3 +222,25 @@ if err := resp.RaiseForStatus(); err != nil {
     log.Fatal(err)
 }
 ```
+
+## Testing
+
+Run the local unit tests:
+
+```bash
+go test ./...
+```
+
+Run the integration tests against `https://httpbin.org`:
+
+```bash
+go test -tags=integration ./...
+```
+
+The integration suite is guarded by the `integration` build tag because it makes
+real network requests. Set `HTTPBIN_BASE_URL` to point at a compatible httpbin
+deployment if you do not want to use the public service:
+
+```bash
+HTTPBIN_BASE_URL=https://httpbin.org go test -tags=integration ./...
+```
