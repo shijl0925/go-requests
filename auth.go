@@ -2,10 +2,12 @@ package requests
 
 import (
 	"crypto/md5" //nolint:gosec // MD5 used for Digest auth per RFC 2617, not for cryptographic security
+	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // AuthProvider is implemented by any value that can add authentication
@@ -37,8 +39,6 @@ func (a TokenAuth) Apply(req *http.Request) {
 }
 
 // DigestAuth implements HTTP Digest Authentication (RFC 2617).
-// Note: this is a simplified single-round implementation and does not support
-// qop="auth" nonce counters or opaque values beyond a single exchange.
 type DigestAuth struct {
 	Username string
 	Password string
@@ -50,8 +50,6 @@ type DigestAuth struct {
 // handshake.
 func (a DigestAuth) Apply(_ *http.Request) {}
 
-// applyDigestAuth performs the second step of Digest auth using the challenge
-// contained in the 401 response header.
 // applyDigestAuth performs the second step of Digest auth using the challenge
 // contained in the 401 response header.
 //
@@ -71,19 +69,48 @@ func applyDigestAuth(req *http.Request, a DigestAuth, wwwAuthenticate string) {
 	uri := req.URL.RequestURI()
 
 	ha1 := md5sum(a.Username + ":" + realm + ":" + a.Password) //nolint:gosec
-	ha2 := md5sum(req.Method + ":" + uri)                       //nolint:gosec
-	response := md5sum(ha1 + ":" + nonce + ":" + ha2)           //nolint:gosec
+	ha2 := md5sum(req.Method + ":" + uri)                      //nolint:gosec
+	response := md5sum(ha1 + ":" + nonce + ":" + ha2)          //nolint:gosec
+	qop := selectDigestQOP(params["qop"])
+	nonceCount := "00000001"
+	cnonce := newDigestCNonce()
+	if qop == "auth" {
+		response = md5sum(ha1 + ":" + nonce + ":" + nonceCount + ":" + cnonce + ":" + qop + ":" + ha2) //nolint:gosec
+	}
 
 	header := fmt.Sprintf(
 		`Digest username="%s", realm="%s", nonce="%s", uri="%s", algorithm=%s, response="%s"`,
 		a.Username, realm, nonce, uri, algorithm, response,
 	)
+	if params["opaque"] != "" {
+		header += fmt.Sprintf(`, opaque="%s"`, params["opaque"])
+	}
+	if qop == "auth" {
+		header += fmt.Sprintf(`, qop=%s, nc=%s, cnonce="%s"`, qop, nonceCount, cnonce)
+	}
 	req.Header.Set("Authorization", header)
 }
 
 func md5sum(s string) string {
 	h := md5.Sum([]byte(s)) //nolint:gosec
 	return hex.EncodeToString(h[:])
+}
+
+func selectDigestQOP(qop string) string {
+	for _, part := range strings.Split(qop, ",") {
+		if strings.TrimSpace(part) == "auth" {
+			return "auth"
+		}
+	}
+	return ""
+}
+
+func newDigestCNonce() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return md5sum(fmt.Sprint(time.Now().UnixNano())) //nolint:gosec
+	}
+	return hex.EncodeToString(b)
 }
 
 func parseDigestChallenge(header string) map[string]string {
