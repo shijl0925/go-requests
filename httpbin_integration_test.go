@@ -134,7 +134,11 @@ func TestHTTPBinIntegrationHTTPMethods(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resp, err := tt.call(httpbinURL("/" + strings.ToLower(tt.name)))
+			path := "/" + strings.ToLower(tt.name)
+			if tt.method == http.MethodOptions {
+				path = "/anything"
+			}
+			resp, err := tt.call(httpbinURL(path))
 			if err != nil {
 				t.Fatalf("%s failed: %v", tt.name, err)
 			}

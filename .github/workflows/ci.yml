@@ -13,6 +13,11 @@ jobs:
   test:
     name: Go tests
     runs-on: ubuntu-latest
+    services:
+      httpbin:
+        image: kennethreitz/httpbin@sha256:599fe5e5073102dbb0ee3dbb65f049dab44fa9fc251f6835c9990f8fb196a72b
+        ports:
+          - 8080:80
 
     steps:
       - name: Checkout
@@ -27,5 +32,20 @@ jobs:
       - name: Run unit tests
         run: go test ./... -count=1
 
+      - name: Wait for httpbin
+        run: |
+          for i in {1..30}; do
+            if curl -fsS "$HTTPBIN_BASE_URL/get" >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "httpbin did not become ready" >&2
+          exit 1
+        env:
+          HTTPBIN_BASE_URL: http://127.0.0.1:8080
+
       - name: Run integration tests
         run: go test -tags=integration ./... -count=1 -timeout 120s
+        env:
+          HTTPBIN_BASE_URL: http://127.0.0.1:8080
