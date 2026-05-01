@@ -590,6 +590,139 @@ func TestRawBody(t *testing.T) {
 	}
 }
 
+func TestStreamedMultipartUpload(t *testing.T) {
+	serverStarted := make(chan struct{})
+	releaseBody := make(chan struct{})
+
+	srv, baseURL := newTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(serverStarted)
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			http.Error(w, "parse multipart failed: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		f, _, err := r.FormFile("upload")
+		if err != nil {
+			http.Error(w, "form file error: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		defer f.Close()
+		content, err := io.ReadAll(f)
+		if err != nil {
+			http.Error(w, "read file failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprint(w, string(content))
+	}))
+	defer srv.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		resp, err := requests.Post(baseURL, requests.Files{
+			"upload": requests.FileField{
+				FileName: "stream.txt",
+				Content: &blockingReader{
+					data:    []byte("streamed body"),
+					release: releaseBody,
+				},
+			},
+		})
+		if err != nil {
+			errCh <- err
+			return
+		}
+		if resp.Text() != "streamed body" {
+			errCh <- fmt.Errorf("expected streamed body echo, got %q", resp.Text())
+			return
+		}
+		errCh <- nil
+	}()
+
+	select {
+	case <-serverStarted:
+	case <-time.After(time.Second):
+		close(releaseBody)
+		if err := <-errCh; err != nil {
+			t.Logf("request finished after releasing body: %v", err)
+		}
+		t.Fatal("server did not receive request before upload body was fully available")
+	}
+
+	close(releaseBody)
+	if err := <-errCh; err != nil {
+		t.Fatalf("streamed upload failed: %v", err)
+	}
+}
+
+func TestStreamedGetResponse(t *testing.T) {
+	finishResponse := make(chan struct{})
+
+	srv, baseURL := newTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("hello"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-finishResponse
+		_, _ = w.Write([]byte(" world"))
+	}))
+	defer srv.Close()
+
+	type result struct {
+		resp *requests.Response
+		err  error
+	}
+	respCh := make(chan result, 1)
+	go func() {
+		resp, err := requests.Get(baseURL, requests.Stream(true))
+		respCh <- result{resp: resp, err: err}
+	}()
+
+	var resp *requests.Response
+	select {
+	case result := <-respCh:
+		if result.err != nil {
+			t.Fatalf("streamed GET failed: %v", result.err)
+		}
+		resp = result.resp
+	case <-time.After(time.Second):
+		close(finishResponse)
+		t.Fatal("streamed GET did not return before the response body completed")
+	}
+	defer resp.Close()
+
+	buf := make([]byte, len("hello"))
+	if _, err := io.ReadFull(resp.Body(), buf); err != nil {
+		t.Fatalf("read first streamed chunk failed: %v", err)
+	}
+	if string(buf) != "hello" {
+		t.Fatalf("expected first chunk %q, got %q", "hello", string(buf))
+	}
+
+	close(finishResponse)
+	rest, err := io.ReadAll(resp.Body())
+	if err != nil {
+		t.Fatalf("read remaining streamed body failed: %v", err)
+	}
+	if string(rest) != " world" {
+		t.Fatalf("expected remaining body %q, got %q", " world", string(rest))
+	}
+}
+
+type blockingReader struct {
+	data    []byte
+	release <-chan struct{}
+	sent    bool
+}
+
+func (r *blockingReader) Read(p []byte) (int, error) {
+	if r.sent {
+		return 0, io.EOF
+	}
+	<-r.release
+	r.sent = true
+	return copy(p, r.data), nil
+}
+
 func TestResponseIsRedirect(t *testing.T) {
 	srv, baseURL := newTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/dest", http.StatusFound)

@@ -36,6 +36,7 @@ type requestConfig struct {
 	verify         *bool
 	proxies        map[string]string
 	context        context.Context
+	stream         bool
 }
 
 // FileField represents a file to be uploaded in a multipart request.
@@ -131,6 +132,14 @@ type Body struct {
 
 func (b Body) applyOption(c *requestConfig) {
 	c.rawBody = b.Reader
+}
+
+// Stream controls whether the response body is left open for streaming.
+// Set to true for large downloads, similar to Python requests' stream=True.
+type Stream bool
+
+func (s Stream) applyOption(c *requestConfig) {
+	c.stream = bool(s)
 }
 
 // Files sets multipart file uploads. The map key is the form field name.
@@ -304,6 +313,9 @@ func (s *Session) request(method, rawURL string, opts []Option) (*Response, erro
 	}
 	req, err := http.NewRequestWithContext(ctx, method, parsedURL.String(), body)
 	if err != nil {
+		if pr, ok := body.(*io.PipeReader); ok {
+			_ = pr.CloseWithError(err)
+		}
 		return nil, fmt.Errorf("go-requests: failed to create request: %w", err)
 	}
 
@@ -355,7 +367,7 @@ func (s *Session) request(method, rawURL string, opts []Option) (*Response, erro
 		return nil, fmt.Errorf("go-requests: request failed: %w", err)
 	}
 
-	resp, err := newResponse(httpResp)
+	resp, err := newResponse(httpResp, cfg.stream)
 	if err != nil {
 		return nil, err
 	}
@@ -365,6 +377,7 @@ func (s *Session) request(method, rawURL string, opts []Option) (*Response, erro
 		if da, ok := auth.(DigestAuth); ok {
 			wwwAuth := httpResp.Header.Get("WWW-Authenticate")
 			if strings.HasPrefix(wwwAuth, "Digest ") {
+				_ = resp.Close()
 				// Rebuild the request for the retry.
 				retryBody, _, err := buildBody(cfg)
 				if err != nil {
@@ -382,7 +395,7 @@ func (s *Session) request(method, rawURL string, opts []Option) (*Response, erro
 				if err != nil {
 					return nil, fmt.Errorf("go-requests: digest auth retry failed: %w", err)
 				}
-				resp, err = newResponse(httpResp2)
+				resp, err = newResponse(httpResp2, cfg.stream)
 				if err != nil {
 					return nil, err
 				}
@@ -464,15 +477,32 @@ func buildBody(cfg *requestConfig) (io.Reader, string, error) {
 
 // buildMultipart creates a multipart/form-data body from files and data fields.
 func buildMultipart(cfg *requestConfig) (io.Reader, string, error) {
-	var buf bytes.Buffer
-	w := multipart.NewWriter(&buf)
+	pr, pw := io.Pipe()
+	w := multipart.NewWriter(pw)
+	contentType := w.FormDataContentType()
 
+	go func() {
+		err := writeMultipart(w, cfg)
+		if closeErr := w.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("go-requests: multipart close: %w", closeErr)
+		}
+		if err != nil {
+			_ = pw.CloseWithError(err)
+			return
+		}
+		_ = pw.Close()
+	}()
+
+	return pr, contentType, nil
+}
+
+func writeMultipart(w *multipart.Writer, cfg *requestConfig) error {
 	// Write form data fields first.
 	if cfg.data != nil {
 		for k, vals := range cfg.data {
 			for _, v := range vals {
 				if err := w.WriteField(k, v); err != nil {
-					return nil, "", fmt.Errorf("go-requests: multipart write field %q: %w", k, err)
+					return fmt.Errorf("go-requests: multipart write field %q: %w", k, err)
 				}
 			}
 		}
@@ -497,17 +527,14 @@ func buildMultipart(cfg *requestConfig) (io.Reader, string, error) {
 			fw, err = w.CreateFormFile(fieldName, filepath.Base(filename))
 		}
 		if err != nil {
-			return nil, "", fmt.Errorf("go-requests: multipart create file %q: %w", fieldName, err)
+			return fmt.Errorf("go-requests: multipart create file %q: %w", fieldName, err)
 		}
 		if _, err := io.Copy(fw, ff.Content); err != nil {
-			return nil, "", fmt.Errorf("go-requests: multipart copy file %q: %w", fieldName, err)
+			return fmt.Errorf("go-requests: multipart copy file %q: %w", fieldName, err)
 		}
 	}
 
-	if err := w.Close(); err != nil {
-		return nil, "", fmt.Errorf("go-requests: multipart close: %w", err)
-	}
-	return &buf, w.FormDataContentType(), nil
+	return nil
 }
 
 // ---- HTTP method helpers ---------------------------------------------------

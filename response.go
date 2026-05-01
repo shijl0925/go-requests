@@ -38,9 +38,10 @@ type Response struct {
 	bodyRead bool
 }
 
-// newResponse creates a Response from a *http.Response, reading and closing
-// the response body so it is available for repeated access.
-func newResponse(r *http.Response) (*Response, error) {
+// newResponse creates a Response from a *http.Response. By default it reads and
+// closes the response body so it is available for repeated access. In streaming
+// mode, the caller is responsible for reading or closing the body.
+func newResponse(r *http.Response, stream bool) (*Response, error) {
 	resp := &Response{
 		StatusCode:  r.StatusCode,
 		Status:      r.Status,
@@ -49,6 +50,10 @@ func newResponse(r *http.Response) (*Response, error) {
 		URL:         r.Request.URL,
 		Request:     r.Request,
 		RawResponse: r,
+	}
+
+	if stream {
+		return resp, nil
 	}
 
 	defer r.Body.Close()
@@ -61,20 +66,67 @@ func newResponse(r *http.Response) (*Response, error) {
 	return resp, nil
 }
 
+// Body returns the underlying response body for streaming reads.
+// The caller must close the body when finished, or call Response.Close.
+func (r *Response) Body() io.ReadCloser {
+	if r.RawResponse == nil {
+		return nil
+	}
+	return r.RawResponse.Body
+}
+
+// Close closes the underlying response body.
+func (r *Response) Close() error {
+	if r.RawResponse == nil || r.RawResponse.Body == nil {
+		return nil
+	}
+	return r.RawResponse.Body.Close()
+}
+
+// ReadContent reads the response body into memory and caches it. It is useful
+// for streamed responses when callers decide to consume the remaining body.
+func (r *Response) ReadContent() ([]byte, error) {
+	if r.bodyRead {
+		return r.body, nil
+	}
+	if r.RawResponse == nil || r.RawResponse.Body == nil {
+		r.bodyRead = true
+		return r.body, nil
+	}
+	body, err := io.ReadAll(r.RawResponse.Body)
+	if err != nil {
+		return nil, err
+	}
+	_ = r.RawResponse.Body.Close()
+	r.body = body
+	r.bodyRead = true
+	return r.body, nil
+}
+
 // Content returns the response body as a byte slice.
 func (r *Response) Content() []byte {
+	if !r.bodyRead {
+		body, err := r.ReadContent()
+		if err == nil {
+			return body
+		}
+	}
 	return r.body
 }
 
 // Text returns the response body as a string.
 func (r *Response) Text() string {
-	return string(r.body)
+	return string(r.Content())
 }
 
 // JSON unmarshals the response body into v.
 // v must be a pointer to a value that can be unmarshalled from JSON.
 func (r *Response) JSON(v interface{}) error {
-	return json.Unmarshal(r.body, v)
+	body, err := r.ReadContent()
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(body, v)
 }
 
 // Ok returns true if the status code is less than 400.

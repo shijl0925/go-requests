@@ -39,6 +39,7 @@ func main() {
 - JSON request body (`JSON`, `JSONBody`)
 - Form data body (`Data`)
 - File uploads (`Files`)
+- Streaming uploads (`Body`, streamed multipart `Files`)
 - Cookie management (`Cookies`)
 - Authentication: Basic Auth, Bearer Token, Digest Auth
 - Request timeout (`Timeout`)
@@ -46,6 +47,7 @@ func main() {
 - TLS verification control (`Verify`)
 - Proxy support (`Proxies`)
 - Context support (`WithContext`)
+- Streaming responses (`Stream`)
 - Response helpers: `.Text()`, `.JSON()`, `.Content()`, `.Ok()`, `.RaiseForStatus()`, `.IsRedirect()`
 
 ## Usage
@@ -102,6 +104,35 @@ resp, err := requests.Post("https://httpbin.org/post",
         },
     },
 )
+```
+
+Multipart file uploads stream from the provided reader instead of buffering the
+entire file in memory.
+
+### Streaming POST Upload
+
+```go
+f, _ := os.Open("large-video.mp4")
+defer f.Close()
+
+resp, err := requests.Post("https://example.com/upload",
+    requests.Body{Reader: f},
+    requests.Headers{"Content-Type": "video/mp4"},
+)
+```
+
+### Streaming GET Download
+
+```go
+resp, err := requests.Get("https://example.com/large-file",
+    requests.Stream(true),
+)
+if err != nil {
+    panic(err)
+}
+defer resp.Close()
+
+_, err = io.Copy(dst, resp.Body())
 ```
 
 ### Authentication
