@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -815,5 +816,162 @@ func TestMultipleParamOptions(t *testing.T) {
 	params := body["params"].(map[string]interface{})
 	if params["a"] != "1" || params["b"] != "2" {
 		t.Errorf("expected a=1 and b=2 in params, got %v", params)
+	}
+}
+
+func TestMultiValueParamsAndData(t *testing.T) {
+	srv, baseURL := newTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Encode() != "tag=go&tag=requests" {
+			http.Error(w, "unexpected query: "+r.URL.RawQuery, http.StatusBadRequest)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "parse form failed", http.StatusBadRequest)
+			return
+		}
+		values := r.PostForm["kind"]
+		if len(values) != 2 || values[0] != "client" || values[1] != "http" {
+			http.Error(w, fmt.Sprintf("unexpected form: %#v", r.PostForm), http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	resp, err := requests.Post(baseURL,
+		requests.ParamValues{"tag": {"go", "requests"}},
+		requests.DataValues{"kind": {"client", "http"}},
+	)
+	if err != nil {
+		t.Fatalf("Post failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", resp.StatusCode, resp.Text())
+	}
+}
+
+func TestCommonHeaderOptionsAndContentType(t *testing.T) {
+	srv, baseURL := newTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got := map[string]string{
+			"userAgent":   r.Header.Get("User-Agent"),
+			"referer":     r.Header.Get("Referer"),
+			"accept":      r.Header.Get("Accept"),
+			"contentType": r.Header.Get("Content-Type"),
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(got)
+	}))
+	defer srv.Close()
+
+	resp, err := requests.Post(baseURL,
+		requests.JSON{"hello": "world"},
+		requests.UserAgent("custom-agent"),
+		requests.Referer("https://example.com"),
+		requests.Accept("application/json"),
+		requests.ContentType("application/vnd.example+json"),
+	)
+	if err != nil {
+		t.Fatalf("Post failed: %v", err)
+	}
+	got, err := resp.JSONMap()
+	if err != nil {
+		t.Fatalf("JSONMap failed: %v", err)
+	}
+	if got["userAgent"] != "custom-agent" || got["referer"] != "https://example.com" ||
+		got["accept"] != "application/json" || got["contentType"] != "application/vnd.example+json" {
+		t.Fatalf("unexpected headers: %#v", got)
+	}
+}
+
+func TestResponseHelpersSaveToFileAndElapsed(t *testing.T) {
+	srv, baseURL := newTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `["go","requests"]`)
+	}))
+	defer srv.Close()
+
+	resp, err := requests.Get(baseURL)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if resp.Elapsed <= 0 {
+		t.Fatalf("expected elapsed time to be recorded, got %s", resp.Elapsed)
+	}
+	values, err := resp.JSONSlice()
+	if err != nil {
+		t.Fatalf("JSONSlice failed: %v", err)
+	}
+	if len(values) != 2 || values[0] != "go" || values[1] != "requests" {
+		t.Fatalf("unexpected JSON slice: %#v", values)
+	}
+
+	path := t.TempDir() + "/response.json"
+	if err := resp.SaveToFile(path); err != nil {
+		t.Fatalf("SaveToFile failed: %v", err)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	if string(content) != `["go","requests"]` {
+		t.Fatalf("unexpected saved content: %q", content)
+	}
+}
+
+func TestRetryStatusCode(t *testing.T) {
+	attempts := 0
+	srv, baseURL := newTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			http.Error(w, "try again", http.StatusServiceUnavailable)
+			return
+		}
+		fmt.Fprint(w, "ok")
+	}))
+	defer srv.Close()
+
+	resp, err := requests.Get(baseURL, requests.Retry{MaxRetries: 2})
+	if err != nil {
+		t.Fatalf("Get with retry failed: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected 2 attempts, got %d", attempts)
+	}
+	if resp.StatusCode != http.StatusOK || resp.Text() != "ok" {
+		t.Fatalf("unexpected response: status=%d body=%q", resp.StatusCode, resp.Text())
+	}
+}
+
+func TestSessionSetters(t *testing.T) {
+	srv, baseURL := newTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Session") != "yes" {
+			http.Error(w, "missing session header", http.StatusBadRequest)
+			return
+		}
+		if _, _, ok := r.BasicAuth(); !ok {
+			http.Error(w, "missing auth", http.StatusUnauthorized)
+			return
+		}
+		if _, err := r.Cookie("token"); err != nil {
+			http.Error(w, "missing cookie", http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	s := requests.NewSession().
+		SetHeader("X-Session", "yes").
+		SetAuth(requests.BasicAuth{Username: "user", Password: "pass"}).
+		SetTimeout(time.Second)
+	if err := s.SetCookie(baseURL, "token", "abc"); err != nil {
+		t.Fatalf("SetCookie failed: %v", err)
+	}
+	resp, err := s.Get(baseURL)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", resp.StatusCode, resp.Text())
 	}
 }

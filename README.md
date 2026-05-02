@@ -38,17 +38,20 @@ func main() {
 - Request headers (`Headers`)
 - JSON request body (`JSON`, `JSONBody`)
 - Form data body (`Data`)
+- Multi-value query and form fields (`ParamValues`, `DataValues`)
 - File uploads (`Files`)
 - Streaming uploads (`Body`, streamed multipart `Files`)
 - Cookie management (`Cookies`)
 - Authentication: Basic Auth, Bearer Token, Digest Auth
 - Request timeout (`Timeout`)
+- Automatic retries for replayable requests (`Retry`)
 - Redirect control (`AllowRedirects`)
 - TLS verification control (`Verify`)
 - Proxy support (`Proxies`)
 - Context support (`WithContext`)
+- Common header shortcuts (`Header`, `UserAgent`, `Referer`, `Accept`, `ContentType`)
 - Streaming responses (`Stream`)
-- Response helpers: `.Text()`, `.JSON()`, `.Content()`, `.Ok()`, `.RaiseForStatus()`, `.IsRedirect()`
+- Response helpers: `.Text()`, `.JSON()`, `.JSONMap()`, `.JSONSlice()`, `.Content()`, `.SaveToFile()`, `.Ok()`, `.RaiseForStatus()`, `.IsRedirect()`
 
 ## Usage
 
@@ -58,6 +61,14 @@ func main() {
 resp, err := requests.Get("https://httpbin.org/get",
     requests.Params{"page": "1", "limit": "10"},
     requests.Headers{"Accept": "application/json"},
+)
+```
+
+Use `ParamValues` when the same query key needs multiple values:
+
+```go
+resp, err := requests.Get("https://httpbin.org/get",
+    requests.ParamValues{"tag": {"go", "requests"}},
 )
 ```
 
@@ -87,6 +98,14 @@ resp, err := requests.Post("https://httpbin.org/post",
 ```go
 resp, err := requests.Post("https://httpbin.org/post",
     requests.Data{"username": "admin", "password": "secret"},
+)
+```
+
+Use `DataValues` when a form field needs repeated values:
+
+```go
+resp, err := requests.Post("https://httpbin.org/post",
+    requests.DataValues{"tag": {"go", "requests"}},
 )
 ```
 
@@ -170,6 +189,31 @@ resp, err := requests.Get("https://httpbin.org/delay/5",
 )
 ```
 
+### Retry
+
+```go
+resp, err := requests.Get("https://api.example.com/resource",
+    requests.Retry{
+        MaxRetries: 3,
+        Wait:       200 * time.Millisecond,
+    },
+)
+```
+
+By default, retries apply to replayable requests and retry status codes `429`,
+`500`, `502`, `503`, and `504`. Requests with raw streaming bodies or file
+uploads are not retried automatically because their bodies may not be reusable.
+
+### Header Shortcuts
+
+```go
+resp, err := requests.Get("https://api.example.com/resource",
+    requests.UserAgent("my-client/1.0"),
+    requests.Accept("application/json"),
+    requests.Referer("https://example.com"),
+)
+```
+
 ### Disable Redirects
 
 ```go
@@ -212,8 +256,8 @@ A `Session` maintains persistent headers and cookies across requests, and lets y
 
 ```go
 s := requests.NewSession()
-s.Headers.Set("Authorization", "Bearer my-token")
-s.Timeout = 10 * time.Second
+s.SetHeader("Authorization", "Bearer my-token")
+s.SetTimeout(10 * time.Second)
 
 // All requests from this session use the auth header and timeout.
 resp1, _ := s.Get("https://api.example.com/users")
@@ -238,12 +282,17 @@ resp.Status        // "200 OK"
 resp.Headers       // http.Header
 resp.Cookies       // []*http.Cookie
 resp.URL           // *url.URL (final URL after redirects)
+resp.Elapsed       // time spent receiving the response
 
 resp.Text()        // body as string
 resp.Content()     // body as []byte
 
 var data map[string]interface{}
 resp.JSON(&data)   // unmarshal body into data
+data, _ = resp.JSONMap()
+
+// Save response content to a file
+err := resp.SaveToFile("response.json")
 
 resp.Ok()          // true if status < 400
 resp.IsRedirect()  // true if status is 3xx

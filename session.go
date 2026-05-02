@@ -37,6 +37,8 @@ type requestConfig struct {
 	proxies        map[string]string
 	context        context.Context
 	stream         bool
+	contentType    string
+	retry          *Retry
 }
 
 // FileField represents a file to be uploaded in a multipart request.
@@ -63,6 +65,20 @@ func (p Params) applyOption(c *requestConfig) {
 	}
 }
 
+// ParamValues sets URL query parameters with support for repeated keys.
+type ParamValues map[string][]string
+
+func (p ParamValues) applyOption(c *requestConfig) {
+	if c.params == nil {
+		c.params = make(url.Values)
+	}
+	for k, vals := range p {
+		for _, v := range vals {
+			c.params.Add(k, v)
+		}
+	}
+}
+
 // Headers sets additional HTTP request headers. Multiple Headers options are
 // merged; later values override earlier ones for the same key.
 type Headers map[string]string
@@ -74,6 +90,44 @@ func (h Headers) applyOption(c *requestConfig) {
 	for k, v := range h {
 		c.headers.Set(k, v)
 	}
+}
+
+// Header sets one HTTP request header.
+type Header struct {
+	Name  string
+	Value string
+}
+
+func (h Header) applyOption(c *requestConfig) {
+	Headers{h.Name: h.Value}.applyOption(c)
+}
+
+// UserAgent sets the User-Agent request header.
+type UserAgent string
+
+func (u UserAgent) applyOption(c *requestConfig) {
+	Header{Name: "User-Agent", Value: string(u)}.applyOption(c)
+}
+
+// Referer sets the Referer request header.
+type Referer string
+
+func (r Referer) applyOption(c *requestConfig) {
+	Header{Name: "Referer", Value: string(r)}.applyOption(c)
+}
+
+// Accept sets the Accept request header.
+type Accept string
+
+func (a Accept) applyOption(c *requestConfig) {
+	Header{Name: "Accept", Value: string(a)}.applyOption(c)
+}
+
+// ContentType overrides the Content-Type request header.
+type ContentType string
+
+func (ct ContentType) applyOption(c *requestConfig) {
+	c.contentType = string(ct)
 }
 
 // Cookies adds cookies to the request. Multiple Cookies options are merged.
@@ -104,6 +158,20 @@ func (d Data) applyOption(c *requestConfig) {
 	}
 	for k, v := range d {
 		c.data.Set(k, v)
+	}
+}
+
+// DataValues sets URL-encoded form data with support for repeated keys.
+type DataValues map[string][]string
+
+func (d DataValues) applyOption(c *requestConfig) {
+	if c.data == nil {
+		c.data = make(url.Values)
+	}
+	for k, vals := range d {
+		for _, v := range vals {
+			c.data.Add(k, v)
+		}
 	}
 }
 
@@ -200,6 +268,28 @@ func (w WithContext) applyOption(c *requestConfig) {
 	c.context = w.Ctx
 }
 
+// Retry configures automatic retries for replayable requests.
+type Retry struct {
+	// MaxRetries is the number of retry attempts after the initial request.
+	MaxRetries int
+	// Wait is the initial delay between attempts.
+	Wait time.Duration
+	// MaxWait caps the computed delay when BackoffFactor is used.
+	MaxWait time.Duration
+	// BackoffFactor multiplies the delay after each retry. Values <= 0 use 1.
+	BackoffFactor float64
+	// StatusCodes lists response status codes that should be retried. When
+	// empty, 429, 500, 502, 503, and 504 are retried.
+	StatusCodes []int
+	// Methods lists HTTP methods that may be retried. When empty, all methods
+	// are eligible if the request body can be replayed.
+	Methods []string
+}
+
+func (r Retry) applyOption(c *requestConfig) {
+	c.retry = &r
+}
+
 // ---- Session ---------------------------------------------------------------
 
 // Session maintains persistent state (headers, cookies, auth, etc.) across
@@ -243,6 +333,34 @@ func NewSession() *Session {
 	}
 	s.Headers.Set("User-Agent", "go-requests/1.0")
 	s.client = s.buildClient()
+	return s
+}
+
+// SetHeader sets a header sent with every request made by this session.
+func (s *Session) SetHeader(name, value string) *Session {
+	s.Headers.Set(name, value)
+	return s
+}
+
+// SetCookie stores a cookie for the given URL in this session's cookie jar.
+func (s *Session) SetCookie(rawURL, name, value string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("go-requests: invalid cookie URL %q: %w", rawURL, err)
+	}
+	s.Cookies.SetCookies(u, []*http.Cookie{{Name: name, Value: value}})
+	return nil
+}
+
+// SetAuth sets the default authentication provider for this session.
+func (s *Session) SetAuth(auth AuthProvider) *Session {
+	s.Auth = auth
+	return s
+}
+
+// SetTimeout sets the default timeout for this session.
+func (s *Session) SetTimeout(timeout time.Duration) *Session {
+	s.Timeout = timeout
 	return s
 }
 
@@ -293,25 +411,95 @@ func (s *Session) request(method, rawURL string, opts []Option) (*Response, erro
 	if cfg.params != nil {
 		q := parsedURL.Query()
 		for k, vals := range cfg.params {
+			q.Del(k)
 			for _, v := range vals {
-				q.Set(k, v)
+				q.Add(k, v)
 			}
 		}
 		parsedURL.RawQuery = q.Encode()
 	}
 
-	// Build request body.
+	ctx := cfg.context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// Determine effective client.
+	client := s.buildEffectiveClient(cfg)
+
+	// Apply per-request timeout.
+	if cfg.timeout > 0 {
+		client.Timeout = cfg.timeout
+	} else if s.Timeout > 0 {
+		client.Timeout = s.Timeout
+	}
+
+	auth := s.Auth
+	if cfg.auth != nil {
+		auth = cfg.auth
+	}
+	start := time.Now()
+	maxAttempts := retryMaxAttempts(cfg.retry)
+	var lastErr error
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		req, err := s.newHTTPRequest(ctx, method, parsedURL.String(), cfg, auth)
+		if err != nil {
+			return nil, err
+		}
+
+		httpResp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			if shouldRetryError(cfg, method, attempt, maxAttempts) {
+				if err := waitBeforeRetry(ctx, cfg.retry, attempt); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			return nil, fmt.Errorf("go-requests: request failed: %w", err)
+		}
+
+		resp, err := newResponse(httpResp, cfg.stream)
+		if err != nil {
+			return nil, err
+		}
+		resp.Elapsed = time.Since(start)
+
+		// Handle Digest Auth retry on 401.
+		if resp.StatusCode == http.StatusUnauthorized {
+			if da, ok := auth.(DigestAuth); ok {
+				wwwAuth := httpResp.Header.Get("WWW-Authenticate")
+				if strings.HasPrefix(wwwAuth, "Digest ") {
+					resp, err = s.retryDigestAuth(ctx, client, req, method, parsedURL.String(), cfg, da, wwwAuth, start)
+					if err != nil {
+						return nil, err
+					}
+				}
+			}
+		}
+
+		if shouldRetryResponse(resp, cfg, method, attempt, maxAttempts) {
+			_ = resp.Close()
+			if err := waitBeforeRetry(ctx, cfg.retry, attempt); err != nil {
+				return nil, err
+			}
+			continue
+		}
+
+		return resp, nil
+	}
+
+	return nil, fmt.Errorf("go-requests: request failed: %w", lastErr)
+}
+
+func (s *Session) newHTTPRequest(ctx context.Context, method, rawURL string, cfg *requestConfig, auth AuthProvider) (*http.Request, error) {
 	body, contentType, err := buildBody(cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	// Create the request.
-	ctx := cfg.context
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	req, err := http.NewRequestWithContext(ctx, method, parsedURL.String(), body)
+	req, err := http.NewRequestWithContext(ctx, method, rawURL, body)
 	if err != nil {
 		if pr, ok := body.(*io.PipeReader); ok {
 			_ = pr.CloseWithError(err)
@@ -319,7 +507,6 @@ func (s *Session) request(method, rawURL string, opts []Option) (*Response, erro
 		return nil, fmt.Errorf("go-requests: failed to create request: %w", err)
 	}
 
-	// Apply session-level headers first, then per-request headers.
 	for k, vals := range s.Headers {
 		for _, v := range vals {
 			req.Header.Set(k, v)
@@ -333,77 +520,130 @@ func (s *Session) request(method, rawURL string, opts []Option) (*Response, erro
 		}
 	}
 
-	// Set Content-Type if a body was built.
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
-
-	// Apply cookies.
-	for _, ck := range cfg.cookies {
-		req.AddCookie(ck)
+	if cfg.contentType != "" {
+		req.Header.Set("Content-Type", cfg.contentType)
 	}
 
-	// Apply auth (per-request overrides session-level).
-	auth := s.Auth
-	if cfg.auth != nil {
-		auth = cfg.auth
+	for _, ck := range cfg.cookies {
+		req.AddCookie(ck)
 	}
 	if auth != nil {
 		auth.Apply(req)
 	}
 
-	// Determine effective client.
-	client := s.buildEffectiveClient(cfg)
+	return req, nil
+}
 
-	// Apply per-request timeout.
-	if cfg.timeout > 0 {
-		client.Timeout = cfg.timeout
-	} else if s.Timeout > 0 {
-		client.Timeout = s.Timeout
-	}
-
-	httpResp, err := client.Do(req)
+func (s *Session) retryDigestAuth(ctx context.Context, client *http.Client, req *http.Request, method, rawURL string, cfg *requestConfig, da DigestAuth, wwwAuth string, start time.Time) (*Response, error) {
+	retryReq, err := s.newHTTPRequest(ctx, method, rawURL, cfg, nil)
 	if err != nil {
-		return nil, fmt.Errorf("go-requests: request failed: %w", err)
+		return nil, err
 	}
-
+	for k, vals := range req.Header {
+		retryReq.Header[k] = vals
+	}
+	applyDigestAuth(retryReq, da, wwwAuth)
+	httpResp, err := client.Do(retryReq)
+	if err != nil {
+		return nil, fmt.Errorf("go-requests: digest auth retry failed: %w", err)
+	}
 	resp, err := newResponse(httpResp, cfg.stream)
 	if err != nil {
 		return nil, err
 	}
+	resp.Elapsed = time.Since(start)
+	return resp, nil
+}
 
-	// Handle Digest Auth retry on 401.
-	if resp.StatusCode == http.StatusUnauthorized {
-		if da, ok := auth.(DigestAuth); ok {
-			wwwAuth := httpResp.Header.Get("WWW-Authenticate")
-			if strings.HasPrefix(wwwAuth, "Digest ") {
-				_ = resp.Close()
-				// Rebuild the request for the retry.
-				retryBody, _, err := buildBody(cfg)
-				if err != nil {
-					return nil, err
-				}
-				req2, err := http.NewRequestWithContext(ctx, method, parsedURL.String(), retryBody)
-				if err != nil {
-					return nil, err
-				}
-				for k, vals := range req.Header {
-					req2.Header[k] = vals
-				}
-				applyDigestAuth(req2, da, wwwAuth)
-				httpResp2, err := client.Do(req2)
-				if err != nil {
-					return nil, fmt.Errorf("go-requests: digest auth retry failed: %w", err)
-				}
-				resp, err = newResponse(httpResp2, cfg.stream)
-				if err != nil {
-					return nil, err
-				}
-			}
+func retryMaxAttempts(retry *Retry) int {
+	if retry == nil || retry.MaxRetries <= 0 {
+		return 1
+	}
+	return retry.MaxRetries + 1
+}
+
+func shouldRetryError(cfg *requestConfig, method string, attempt, maxAttempts int) bool {
+	return attempt+1 < maxAttempts && retryAllowed(cfg, method)
+}
+
+func shouldRetryResponse(resp *Response, cfg *requestConfig, method string, attempt, maxAttempts int) bool {
+	if attempt+1 >= maxAttempts || !retryAllowed(cfg, method) {
+		return false
+	}
+	for _, code := range retryStatusCodes(cfg.retry) {
+		if resp.StatusCode == code {
+			return true
 		}
 	}
+	return false
+}
 
-	return resp, nil
+func retryAllowed(cfg *requestConfig, method string) bool {
+	if cfg.retry == nil || !isReplayable(cfg) {
+		return false
+	}
+	if len(cfg.retry.Methods) == 0 {
+		return true
+	}
+	for _, m := range cfg.retry.Methods {
+		if strings.EqualFold(m, method) {
+			return true
+		}
+	}
+	return false
+}
+
+func isReplayable(cfg *requestConfig) bool {
+	return cfg.rawBody == nil && len(cfg.files) == 0
+}
+
+func retryStatusCodes(retry *Retry) []int {
+	if retry != nil && len(retry.StatusCodes) > 0 {
+		return retry.StatusCodes
+	}
+	return []int{
+		http.StatusTooManyRequests,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout,
+	}
+}
+
+func waitBeforeRetry(ctx context.Context, retry *Retry, attempt int) error {
+	delay := retryDelay(retry, attempt)
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func retryDelay(retry *Retry, attempt int) time.Duration {
+	if retry == nil || retry.Wait <= 0 {
+		return 0
+	}
+	factor := retry.BackoffFactor
+	if factor <= 0 {
+		factor = 1
+	}
+	delay := float64(retry.Wait)
+	for i := 0; i < attempt; i++ {
+		delay *= factor
+	}
+	if retry.MaxWait > 0 && time.Duration(delay) > retry.MaxWait {
+		return retry.MaxWait
+	}
+	return time.Duration(delay)
 }
 
 // buildEffectiveClient returns a client that respects per-request overrides

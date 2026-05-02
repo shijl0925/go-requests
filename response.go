@@ -5,7 +5,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
+	"time"
 )
 
 // Response wraps *http.Response and provides a more user-friendly API,
@@ -31,6 +33,10 @@ type Response struct {
 
 	// RawResponse is the underlying *http.Response.
 	RawResponse *http.Response
+
+	// Elapsed is the time spent receiving the response headers and, for
+	// non-streaming responses, reading the response body.
+	Elapsed time.Duration
 
 	// body caches the response body bytes after the first read.
 	body []byte
@@ -127,6 +133,46 @@ func (r *Response) JSON(v interface{}) error {
 		return err
 	}
 	return json.Unmarshal(body, v)
+}
+
+// JSONMap unmarshals the response body into a map.
+func (r *Response) JSONMap() (map[string]interface{}, error) {
+	var v map[string]interface{}
+	err := r.JSON(&v)
+	return v, err
+}
+
+// JSONSlice unmarshals the response body into a slice.
+func (r *Response) JSONSlice() ([]interface{}, error) {
+	var v []interface{}
+	err := r.JSON(&v)
+	return v, err
+}
+
+// SaveToFile writes the response body to path. For streaming responses this
+// consumes and closes the underlying response body.
+func (r *Response) SaveToFile(path string) error {
+	if r.bodyRead {
+		return os.WriteFile(path, r.body, 0o600)
+	}
+
+	if r.RawResponse == nil || r.RawResponse.Body == nil {
+		return os.WriteFile(path, nil, 0o600)
+	}
+
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	_, err = io.Copy(f, r.RawResponse.Body)
+	closeErr := r.RawResponse.Body.Close()
+	r.bodyRead = true
+	if err != nil {
+		return err
+	}
+	return closeErr
 }
 
 // Ok returns true if the status code is less than 400.
