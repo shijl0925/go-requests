@@ -48,3 +48,23 @@ func TestApplyDigestAuthWithQOPAuth(t *testing.T) {
 		t.Fatalf("unexpected digest response: got %q want %q", params["response"], expectedResponse)
 	}
 }
+
+func TestParseDigestChallengeQuotedComma(t *testing.T) {
+	params := parseDigestChallenge(`Digest realm="example, inc", nonce="nonce-value", qop="auth,auth-int", opaque="opaque,value", algorithm=MD5`)
+
+	if params["realm"] != "example, inc" {
+		t.Fatalf("unexpected realm: %q", params["realm"])
+	}
+	if params["nonce"] != "nonce-value" {
+		t.Fatalf("unexpected nonce: %q", params["nonce"])
+	}
+	if params["qop"] != "auth,auth-int" {
+		t.Fatalf("unexpected qop: %q", params["qop"])
+	}
+	if params["opaque"] != "opaque,value" {
+		t.Fatalf("unexpected opaque: %q", params["opaque"])
+	}
+	if params["algorithm"] != "MD5" {
+		t.Fatalf("unexpected algorithm: %q", params["algorithm"])
+	}
+}

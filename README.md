@@ -292,7 +292,7 @@ ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 defer cancel()
 
 resp, err := requests.Get("https://httpbin.org/get",
-    requests.WithContext{Ctx: ctx},
+    requests.WithContext(ctx),
 )
 ```
 

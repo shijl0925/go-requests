@@ -1,13 +1,18 @@
 package requests_test
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -315,6 +320,51 @@ func TestTokenAuth(t *testing.T) {
 	}
 }
 
+func TestDigestAuthClosesInitialStreamResponse(t *testing.T) {
+	firstBody := &closeTrackingReadCloser{reader: strings.NewReader("unauthorized")}
+	calls := 0
+	rt := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			header := make(http.Header)
+			header.Set("WWW-Authenticate", `Digest realm="test", nonce="nonce-value"`)
+			return &http.Response{
+				StatusCode: http.StatusUnauthorized,
+				Status:     "401 Unauthorized",
+				Header:     header,
+				Body:       firstBody,
+				Request:    req,
+			}, nil
+		}
+		if req.Header.Get("Authorization") == "" {
+			t.Fatal("expected digest Authorization header on retry")
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("ok")),
+			Request:    req,
+		}, nil
+	})
+
+	resp, err := requests.Get("http://example.test",
+		requests.RoundTripper{Transport: rt},
+		requests.Stream(true),
+		requests.Auth{Provider: requests.DigestAuth{Username: "user", Password: "pass"}},
+	)
+	if err != nil {
+		t.Fatalf("Get with digest auth failed: %v", err)
+	}
+	defer resp.Close()
+	if calls != 2 {
+		t.Fatalf("expected digest retry, got %d calls", calls)
+	}
+	if !firstBody.closed {
+		t.Fatal("expected initial 401 response body to be closed before digest retry")
+	}
+}
+
 func TestResponseOk(t *testing.T) {
 	srv, baseURL := newTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -409,6 +459,19 @@ func TestTimeout(t *testing.T) {
 	}
 }
 
+func TestWithContextFunction(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := requests.Get("http://example.test", requests.WithContext(ctx))
+	if err == nil {
+		t.Fatal("expected canceled context error")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
 func TestAllowRedirectsFalse(t *testing.T) {
 	srv, baseURL := newTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
@@ -471,6 +534,70 @@ func TestSession(t *testing.T) {
 			t.Errorf("request %d: expected X-Session-Header=persistent, got %v", i, headers["X-Session-Header"])
 		}
 	}
+}
+
+func TestSessionReusesDefaultTransport(t *testing.T) {
+	var newConnections int32
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "ok")
+	}))
+	srv.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			atomic.AddInt32(&newConnections, 1)
+		}
+	}
+	srv.Start()
+	defer srv.Close()
+
+	s := requests.NewSession()
+	for i := 0; i < 3; i++ {
+		resp, err := s.Get(srv.URL)
+		if err != nil {
+			t.Fatalf("request %d failed: %v", i+1, err)
+		}
+		if resp.Text() != "ok" {
+			t.Fatalf("request %d got body %q", i+1, resp.Text())
+		}
+	}
+	if got := atomic.LoadInt32(&newConnections); got > 2 {
+		t.Fatalf("expected at most 2 new connections across 3 requests, got %d", got)
+	}
+}
+
+func TestSessionMethodsConcurrentUse(t *testing.T) {
+	rt := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("ok")),
+			Request:    req,
+		}, nil
+	})
+	s := requests.NewSession().SetRoundTripper(rt)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 25; i++ {
+		wg.Add(2)
+		go func(i int) {
+			defer wg.Done()
+			s.SetHeader("X-Test", fmt.Sprintf("%d", i)).
+				SetAuth(requests.TokenAuth{Token: fmt.Sprintf("token-%d", i)}).
+				SetTimeout(time.Second)
+		}(i)
+		go func() {
+			defer wg.Done()
+			resp, err := s.Get("http://example.test")
+			if err != nil {
+				t.Errorf("Get failed: %v", err)
+				return
+			}
+			if resp.Text() != "ok" {
+				t.Errorf("unexpected body: %q", resp.Text())
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestSessionCookiePersistence(t *testing.T) {
@@ -883,6 +1010,24 @@ func TestCommonHeaderOptionsAndContentType(t *testing.T) {
 	}
 }
 
+func TestHeadersContentTypeOverridesAutomaticBodyContentType(t *testing.T) {
+	srv, baseURL := newTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, r.Header.Get("Content-Type"))
+	}))
+	defer srv.Close()
+
+	resp, err := requests.Post(baseURL,
+		requests.JSON{"hello": "world"},
+		requests.Headers{"Content-Type": "application/vnd.example+json; charset=utf-8"},
+	)
+	if err != nil {
+		t.Fatalf("Post failed: %v", err)
+	}
+	if resp.Text() != "application/vnd.example+json; charset=utf-8" {
+		t.Fatalf("unexpected Content-Type: %q", resp.Text())
+	}
+}
+
 func TestResponseHelpersSaveToFileAndElapsed(t *testing.T) {
 	srv, baseURL := newTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1013,8 +1158,63 @@ func TestMaxRedirectsZeroStopsImmediately(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get with MaxRedirects(0) failed: %v", err)
 	}
-	if resp.StatusCode != http.StatusFound || (resp.URL.Path != "" && resp.URL.Path != "/") {
-		t.Fatalf("expected first redirect response, got status=%d url=%s", resp.StatusCode, resp.URL.Path)
+	// MaxRedirects(0) should return the original redirect response without
+	// following it to /next.
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("expected first redirect status, got %d", resp.StatusCode)
+	}
+	if resp.URL.Path == "/next" {
+		t.Fatalf("expected not to follow redirect to /next")
+	}
+}
+
+func TestMaxRedirectsOverridesSessionRedirectDefault(t *testing.T) {
+	srv, baseURL := newTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			http.Redirect(w, r, "/one", http.StatusFound)
+		case "/one":
+			http.Redirect(w, r, "/two", http.StatusFound)
+		case "/two":
+			fmt.Fprint(w, "done")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	s := requests.NewSession()
+	s.AllowRedirects = false
+
+	resp, err := s.Get(baseURL, requests.MaxRedirects(1))
+	if err != nil {
+		t.Fatalf("Get with MaxRedirects failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("expected redirect response after one redirect, got %d", resp.StatusCode)
+	}
+	if resp.URL.Path != "/one" {
+		t.Fatalf("expected to stop at /one, got %s", resp.URL.Path)
+	}
+}
+
+func TestAllowRedirectsFalseOverridesMaxRedirects(t *testing.T) {
+	srv, baseURL := newTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/next", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	resp, err := requests.Get(baseURL, requests.MaxRedirects(5), requests.AllowRedirects(false))
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	// AllowRedirects(false) should prevent following /next even when
+	// MaxRedirects is also provided.
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("expected first redirect status, got %d", resp.StatusCode)
+	}
+	if resp.URL.Path == "/next" {
+		t.Fatalf("expected not to follow redirect to /next")
 	}
 }
 
@@ -1022,6 +1222,20 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+type closeTrackingReadCloser struct {
+	reader io.Reader
+	closed bool
+}
+
+func (c *closeTrackingReadCloser) Read(p []byte) (int, error) {
+	return c.reader.Read(p)
+}
+
+func (c *closeTrackingReadCloser) Close() error {
+	c.closed = true
+	return nil
 }
 
 func TestCustomHTTPClientAndRoundTripper(t *testing.T) {
