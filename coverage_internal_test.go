@@ -92,6 +92,8 @@ func TestBuildClientAndTransportBranches(t *testing.T) {
 	customRT := roundTripFunc(func(req *http.Request) (*http.Response, error) { return nil, errors.New("unused") })
 	s.RoundTripper = customRT
 	if got := s.buildTransportLocked(); got == nil {
+		t.Fatal("expected custom non-transport round tripper, got nil")
+	} else if _, ok := got.(roundTripFunc); !ok {
 		t.Fatalf("expected custom non-transport round tripper, got %T", got)
 	}
 
@@ -265,6 +267,7 @@ func TestDigestAuthAdditionalBranches(t *testing.T) {
 	}
 	applyDigestAuth(req, DigestAuth{Username: "u", Password: "p"}, `Digest realm="r", nonce="n", qop="auth-int"`)
 	params := parseDigestChallenge(req.Header.Get("Authorization"))
+	// This implementation supports only qop=auth, so auth-int is deliberately ignored.
 	if params["qop"] != "" || params["algorithm"] != "MD5" {
 		t.Fatalf("unexpected digest params: %#v", params)
 	}
@@ -297,8 +300,11 @@ func TestRetryHelpers(t *testing.T) {
 	if retryAllowed(cfg, http.MethodGet) || !retryAllowed(cfg, http.MethodPost) {
 		t.Fatal("method retry filter failed")
 	}
-	cfg.files = map[string]FileField{"f": {Content: strings.NewReader("x")}}
-	if retryAllowed(cfg, http.MethodPost) {
+	fileCfg := &requestConfig{
+		retry: &Retry{MaxRetries: 1, Methods: []string{http.MethodPost}},
+		files: map[string]FileField{"f": {Content: strings.NewReader("x")}},
+	}
+	if retryAllowed(fileCfg, http.MethodPost) {
 		t.Fatal("file uploads should not be retryable")
 	}
 	if got := retryStatusCodes(&Retry{StatusCodes: []int{418}}); len(got) != 1 || got[0] != 418 {
