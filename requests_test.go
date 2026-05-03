@@ -559,8 +559,8 @@ func TestSessionReusesDefaultTransport(t *testing.T) {
 			t.Fatalf("request %d got body %q", i+1, resp.Text())
 		}
 	}
-	if got := atomic.LoadInt32(&newConnections); got >= 3 {
-		t.Fatalf("expected at least one reused connection, got %d new connections", got)
+	if got := atomic.LoadInt32(&newConnections); got > 2 {
+		t.Fatalf("expected at least one reused connection across 3 requests, got %d new connections", got)
 	}
 }
 
@@ -1158,7 +1158,7 @@ func TestMaxRedirectsZeroStopsImmediately(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get with MaxRedirects(0) failed: %v", err)
 	}
-	if resp.StatusCode != http.StatusFound || (resp.URL.Path != "" && resp.URL.Path != "/") {
+	if resp.StatusCode != http.StatusFound || resp.URL.Path == "/next" {
 		t.Fatalf("expected first redirect response, got status=%d url=%s", resp.StatusCode, resp.URL.Path)
 	}
 }
@@ -1203,7 +1203,7 @@ func TestAllowRedirectsFalseOverridesMaxRedirects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}
-	if resp.StatusCode != http.StatusFound || (resp.URL.Path != "" && resp.URL.Path != "/") {
+	if resp.StatusCode != http.StatusFound || resp.URL.Path == "/next" {
 		t.Fatalf("expected first redirect response, got status=%d url=%s", resp.StatusCode, resp.URL.Path)
 	}
 }

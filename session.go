@@ -604,7 +604,9 @@ func (s *Session) request(method, rawURL string, opts []Option) (*Response, erro
 			if da, ok := auth.(DigestAuth); ok {
 				wwwAuth := httpResp.Header.Get("WWW-Authenticate")
 				if strings.HasPrefix(wwwAuth, "Digest ") {
-					_ = resp.Close()
+					if err := resp.Close(); err != nil {
+						return nil, fmt.Errorf("go-requests: close digest challenge response: %w", err)
+					}
 					resp, err = snapshot.retryDigestAuth(ctx, client, req, method, parsedURL.String(), cfg, da, wwwAuth, start)
 					if err != nil {
 						return nil, err
