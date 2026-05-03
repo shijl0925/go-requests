@@ -649,7 +649,8 @@ func (s sessionSnapshot) newHTTPRequest(ctx context.Context, method, rawURL stri
 		}
 	}
 	// Apply headers in override order: session headers, automatic body
-	// Content-Type if unset, per-request Headers, then explicit ContentType.
+	// Content-Type only when no Content-Type exists yet, per-request Headers,
+	// then explicit ContentType.
 	if contentType != "" && req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", contentType)
 	}

@@ -1158,6 +1158,8 @@ func TestMaxRedirectsZeroStopsImmediately(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get with MaxRedirects(0) failed: %v", err)
 	}
+	// MaxRedirects(0) should return the original redirect response without
+	// following it to /next.
 	if resp.StatusCode != http.StatusFound || resp.URL.Path == "/next" {
 		t.Fatalf("expected first redirect response, got status=%d url=%s", resp.StatusCode, resp.URL.Path)
 	}
@@ -1203,6 +1205,8 @@ func TestAllowRedirectsFalseOverridesMaxRedirects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}
+	// AllowRedirects(false) should prevent following /next even when
+	// MaxRedirects is also provided.
 	if resp.StatusCode != http.StatusFound || resp.URL.Path == "/next" {
 		t.Fatalf("expected first redirect response, got status=%d url=%s", resp.StatusCode, resp.URL.Path)
 	}
