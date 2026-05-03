@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const malformedURL = "http://[::1" // missing closing bracket to force url.Parse/NewRequest errors
+const unclosedBracketURL = "http://[::1"
 
 func TestTopLevelAndSessionRequest(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -68,7 +68,7 @@ func TestOptionApplyBranches(t *testing.T) {
 
 func TestSessionSetCookieInvalidURLAndResetClient(t *testing.T) {
 	s := NewSession()
-	if err := s.SetCookie(malformedURL, "bad", "value"); err == nil || !strings.Contains(err.Error(), "invalid cookie URL") {
+	if err := s.SetCookie(unclosedBracketURL, "bad", "value"); err == nil || !strings.Contains(err.Error(), "invalid cookie URL") {
 		t.Fatal("expected invalid URL error")
 	}
 
@@ -186,14 +186,14 @@ func TestNewHTTPRequestErrorsAndHeaderPrecedence(t *testing.T) {
 		t.Fatalf("cookie missing: %v", err)
 	}
 
-	if _, err := snap.newHTTPRequest(context.Background(), http.MethodGet, malformedURL, &requestConfig{}, nil); err == nil {
+	if _, err := snap.newHTTPRequest(context.Background(), http.MethodGet, unclosedBracketURL, &requestConfig{}, nil); err == nil {
 		t.Fatal("expected invalid request URL error")
 	}
 }
 
 func TestRequestErrorPathsAndRetries(t *testing.T) {
 	t.Run("invalid URL", func(t *testing.T) {
-		if _, err := NewSession().Get(malformedURL); err == nil {
+		if _, err := NewSession().Get(unclosedBracketURL); err == nil {
 			t.Fatal("expected invalid URL error")
 		}
 	})
@@ -269,9 +269,8 @@ func TestDigestAuthAdditionalBranches(t *testing.T) {
 	}
 	applyDigestAuth(req, DigestAuth{Username: "u", Password: "p"}, `Digest realm="r", nonce="n", qop="auth-int"`)
 	params := parseDigestChallenge(req.Header.Get("Authorization"))
-	// This implementation supports only qop=auth, so auth-int is deliberately ignored.
 	if params["qop"] != "" || params["algorithm"] != "MD5" {
-		t.Fatalf("unexpected digest params: %#v", params)
+		t.Fatalf("expected auth-int qop to be ignored with default MD5 algorithm, got %#v", params)
 	}
 	if got := selectDigestQOP("auth-int, auth"); got != "auth" {
 		t.Fatalf("expected auth qop, got %q", got)
