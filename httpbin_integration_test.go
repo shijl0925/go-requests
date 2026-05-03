@@ -378,7 +378,7 @@ func TestHTTPBinIntegrationErrorsTimeoutContextAndTLS(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		defer cancel()
 
-		_, err := requests.Get(httpbinURL("/delay/3"), requests.WithContext{Ctx: ctx})
+		_, err := requests.Get(httpbinURL("/delay/3"), requests.WithContext(ctx))
 		if err == nil {
 			t.Fatal("expected context deadline error")
 		}

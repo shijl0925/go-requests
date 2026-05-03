@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -305,14 +306,18 @@ func (rt RoundTripper) applyOption(c *requestConfig) {
 	c.roundTripper = rt.Transport
 }
 
-// WithContext attaches a context to the request. This can be used to cancel or
-// set a deadline on the request independently of Timeout.
-type WithContext struct {
-	Ctx context.Context
+type contextOption struct {
+	ctx context.Context
 }
 
-func (w WithContext) applyOption(c *requestConfig) {
-	c.context = w.Ctx
+func (o contextOption) applyOption(c *requestConfig) {
+	c.context = o.ctx
+}
+
+// WithContext attaches a context to the request. This can be used to cancel or
+// set a deadline on the request independently of Timeout.
+func WithContext(ctx context.Context) Option {
+	return contextOption{ctx: ctx}
 }
 
 // Retry configures automatic retries for replayable requests.
@@ -342,6 +347,8 @@ func (r Retry) applyOption(c *requestConfig) {
 // Session maintains persistent state (headers, cookies, auth, etc.) across
 // multiple requests, similar to Python's requests.Session.
 type Session struct {
+	mu sync.RWMutex
+
 	// Headers are sent with every request made by this session.
 	// Per-request Headers options are merged on top of these.
 	Headers http.Header
@@ -379,6 +386,15 @@ type Session struct {
 	customClient bool
 }
 
+type sessionSnapshot struct {
+	headers        http.Header
+	cookies        http.CookieJar
+	auth           AuthProvider
+	timeout        time.Duration
+	allowRedirects bool
+	client         *http.Client
+}
+
 // NewSession creates a new Session with sensible defaults.
 func NewSession() *Session {
 	jar, _ := newCookieJar()
@@ -393,8 +409,24 @@ func NewSession() *Session {
 	return s
 }
 
+func (s *Session) snapshot() sessionSnapshot {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return sessionSnapshot{
+		headers:        s.Headers.Clone(),
+		cookies:        s.Cookies,
+		auth:           s.Auth,
+		timeout:        s.Timeout,
+		allowRedirects: s.AllowRedirects,
+		client:         s.client,
+	}
+}
+
 // SetHeader sets a header sent with every request made by this session.
 func (s *Session) SetHeader(name, value string) *Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.Headers.Set(name, value)
 	return s
 }
@@ -405,24 +437,32 @@ func (s *Session) SetCookie(rawURL, name, value string) error {
 	if err != nil {
 		return fmt.Errorf("go-requests: invalid cookie URL %q: %w", rawURL, err)
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.Cookies.SetCookies(u, []*http.Cookie{{Name: name, Value: value}})
 	return nil
 }
 
 // SetAuth sets the default authentication provider for this session.
 func (s *Session) SetAuth(auth AuthProvider) *Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.Auth = auth
 	return s
 }
 
 // SetTimeout sets the default timeout for this session.
 func (s *Session) SetTimeout(timeout time.Duration) *Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.Timeout = timeout
 	return s
 }
 
 // SetTransportConfig configures the default HTTP transport for this session.
 func (s *Session) SetTransportConfig(config TransportConfig) *Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.TransportConfig = &config
 	if !s.customClient {
 		s.client = s.buildClient()
@@ -433,6 +473,8 @@ func (s *Session) SetTransportConfig(config TransportConfig) *Session {
 // SetClient sets the underlying HTTP client for this session.
 // Passing nil restores the default client built from session settings.
 func (s *Session) SetClient(client *http.Client) *Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if client == nil {
 		s.customClient = false
 		s.client = s.buildClient()
@@ -445,6 +487,8 @@ func (s *Session) SetClient(client *http.Client) *Session {
 
 // SetRoundTripper sets the default RoundTripper for this session.
 func (s *Session) SetRoundTripper(roundTripper http.RoundTripper) *Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.RoundTripper = roundTripper
 	if !s.customClient {
 		s.client = s.buildClient()
@@ -512,16 +556,17 @@ func (s *Session) request(method, rawURL string, opts []Option) (*Response, erro
 	}
 
 	// Determine effective client.
-	client := s.buildEffectiveClient(cfg)
+	snapshot := s.snapshot()
+	client := snapshot.buildEffectiveClient(cfg)
 
 	// Apply per-request timeout.
 	if cfg.timeout > 0 {
 		client.Timeout = cfg.timeout
-	} else if s.Timeout > 0 {
-		client.Timeout = s.Timeout
+	} else if snapshot.timeout > 0 {
+		client.Timeout = snapshot.timeout
 	}
 
-	auth := s.Auth
+	auth := snapshot.auth
 	if cfg.auth != nil {
 		auth = cfg.auth
 	}
@@ -530,7 +575,7 @@ func (s *Session) request(method, rawURL string, opts []Option) (*Response, erro
 	var lastErr error
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		req, err := s.newHTTPRequest(ctx, method, parsedURL.String(), cfg, auth)
+		req, err := snapshot.newHTTPRequest(ctx, method, parsedURL.String(), cfg, auth)
 		if err != nil {
 			return nil, err
 		}
@@ -559,7 +604,7 @@ func (s *Session) request(method, rawURL string, opts []Option) (*Response, erro
 				wwwAuth := httpResp.Header.Get("WWW-Authenticate")
 				if strings.HasPrefix(wwwAuth, "Digest ") {
 					_ = resp.Close()
-					resp, err = s.retryDigestAuth(ctx, client, req, method, parsedURL.String(), cfg, da, wwwAuth, start)
+					resp, err = snapshot.retryDigestAuth(ctx, client, req, method, parsedURL.String(), cfg, da, wwwAuth, start)
 					if err != nil {
 						return nil, err
 					}
@@ -581,7 +626,7 @@ func (s *Session) request(method, rawURL string, opts []Option) (*Response, erro
 	return nil, fmt.Errorf("go-requests: request failed: %w", lastErr)
 }
 
-func (s *Session) newHTTPRequest(ctx context.Context, method, rawURL string, cfg *requestConfig, auth AuthProvider) (*http.Request, error) {
+func (s sessionSnapshot) newHTTPRequest(ctx context.Context, method, rawURL string, cfg *requestConfig, auth AuthProvider) (*http.Request, error) {
 	body, contentType, err := buildBody(cfg)
 	if err != nil {
 		return nil, err
@@ -595,7 +640,7 @@ func (s *Session) newHTTPRequest(ctx context.Context, method, rawURL string, cfg
 		return nil, fmt.Errorf("go-requests: failed to create request: %w", err)
 	}
 
-	for k, vals := range s.Headers {
+	for k, vals := range s.headers {
 		for _, v := range vals {
 			req.Header.Set(k, v)
 		}
@@ -624,7 +669,7 @@ func (s *Session) newHTTPRequest(ctx context.Context, method, rawURL string, cfg
 	return req, nil
 }
 
-func (s *Session) retryDigestAuth(ctx context.Context, client *http.Client, req *http.Request, method, rawURL string, cfg *requestConfig, da DigestAuth, wwwAuth string, start time.Time) (*Response, error) {
+func (s sessionSnapshot) retryDigestAuth(ctx context.Context, client *http.Client, req *http.Request, method, rawURL string, cfg *requestConfig, da DigestAuth, wwwAuth string, start time.Time) (*Response, error) {
 	retryReq, err := s.newHTTPRequest(ctx, method, rawURL, cfg, nil)
 	if err != nil {
 		return nil, err
@@ -734,7 +779,7 @@ func retryDelay(retry *Retry, attempt int) time.Duration {
 }
 
 // buildEffectiveClient returns a client that respects per-request overrides.
-func (s *Session) buildEffectiveClient(cfg *requestConfig) *http.Client {
+func (s sessionSnapshot) buildEffectiveClient(cfg *requestConfig) *http.Client {
 	base := s.client
 	if cfg.client != nil {
 		base = cfg.client
@@ -742,7 +787,7 @@ func (s *Session) buildEffectiveClient(cfg *requestConfig) *http.Client {
 
 	client := cloneHTTPClient(base)
 	if client.Jar == nil {
-		client.Jar = s.Cookies
+		client.Jar = s.cookies
 	}
 
 	if cfg.roundTripper != nil {
@@ -766,7 +811,7 @@ func (s *Session) buildEffectiveClient(cfg *requestConfig) *http.Client {
 		client.Transport = http.DefaultTransport
 	}
 
-	applyRedirectPolicy(client, s.AllowRedirects, cfg.allowRedirects, cfg.maxRedirects)
+	applyRedirectPolicy(client, s.allowRedirects, cfg.allowRedirects, cfg.maxRedirects)
 	return client
 }
 
@@ -841,6 +886,9 @@ func applyTransportConfig(transport *http.Transport, config *TransportConfig) {
 
 func applyRedirectPolicy(client *http.Client, sessionAllowRedirects bool, requestAllowRedirects *bool, requestMaxRedirects *int) {
 	allowRedirects := sessionAllowRedirects
+	if requestMaxRedirects != nil {
+		allowRedirects = true
+	}
 	if requestAllowRedirects != nil {
 		allowRedirects = *requestAllowRedirects
 	}
