@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const malformedIPv6URL = "http://[::1"
+const incompleteIPv6URL = "http://[::1"
 
 func TestTopLevelAndSessionRequest(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -68,7 +68,7 @@ func TestOptionApplyBranches(t *testing.T) {
 
 func TestSessionSetCookieInvalidURLAndResetClient(t *testing.T) {
 	s := NewSession()
-	if err := s.SetCookie(malformedIPv6URL, "testCookie", "value"); err == nil || !strings.Contains(err.Error(), "invalid cookie URL") {
+	if err := s.SetCookie(incompleteIPv6URL, "testCookie", "value"); err == nil || !strings.Contains(err.Error(), "invalid cookie URL") {
 		t.Fatal("expected invalid URL error")
 	}
 
@@ -186,14 +186,14 @@ func TestNewHTTPRequestErrorsAndHeaderPrecedence(t *testing.T) {
 		t.Fatalf("cookie missing: %v", err)
 	}
 
-	if _, err := snap.newHTTPRequest(context.Background(), http.MethodGet, malformedIPv6URL, &requestConfig{}, nil); err == nil {
+	if _, err := snap.newHTTPRequest(context.Background(), http.MethodGet, incompleteIPv6URL, &requestConfig{}, nil); err == nil {
 		t.Fatal("expected invalid request URL error")
 	}
 }
 
 func TestRequestErrorPathsAndRetries(t *testing.T) {
 	t.Run("invalid URL", func(t *testing.T) {
-		if _, err := NewSession().Get(malformedIPv6URL); err == nil {
+		if _, err := NewSession().Get(incompleteIPv6URL); err == nil {
 			t.Fatal("expected invalid URL error")
 		}
 	})
@@ -270,7 +270,7 @@ func TestDigestAuthAdditionalBranches(t *testing.T) {
 	applyDigestAuth(req, DigestAuth{Username: "u", Password: "p"}, `Digest realm="r", nonce="n", qop="auth-int"`)
 	params := parseDigestChallenge(req.Header.Get("Authorization"))
 	if params["qop"] != "" || params["algorithm"] != "MD5" {
-		t.Fatalf("expected auth-int qop to be ignored with default MD5 algorithm, got %#v", params)
+		t.Fatalf("expected qop to be empty when auth-int is provided with MD5 algorithm, got %#v", params)
 	}
 	if got := selectDigestQOP("auth-int, auth"); got != "auth" {
 		t.Fatalf("expected auth qop, got %q", got)
