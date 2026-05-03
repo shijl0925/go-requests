@@ -560,7 +560,7 @@ func TestSessionReusesDefaultTransport(t *testing.T) {
 		}
 	}
 	if got := atomic.LoadInt32(&newConnections); got > 2 {
-		t.Fatalf("expected at least one reused connection across 3 requests, got %d new connections", got)
+		t.Fatalf("expected at most 2 new connections across 3 requests, got %d", got)
 	}
 }
 
