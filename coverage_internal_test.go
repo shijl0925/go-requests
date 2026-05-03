@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const unclosedBracketURL = "http://[::1"
+const invalidTestURL = "http://[::1"
 
 func TestTopLevelAndSessionRequest(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -68,7 +68,7 @@ func TestOptionApplyBranches(t *testing.T) {
 
 func TestSessionSetCookieInvalidURLAndResetClient(t *testing.T) {
 	s := NewSession()
-	if err := s.SetCookie(unclosedBracketURL, "bad", "value"); err == nil || !strings.Contains(err.Error(), "invalid cookie URL") {
+	if err := s.SetCookie(invalidTestURL, "testCookie", "value"); err == nil || !strings.Contains(err.Error(), "invalid cookie URL") {
 		t.Fatal("expected invalid URL error")
 	}
 
@@ -186,14 +186,14 @@ func TestNewHTTPRequestErrorsAndHeaderPrecedence(t *testing.T) {
 		t.Fatalf("cookie missing: %v", err)
 	}
 
-	if _, err := snap.newHTTPRequest(context.Background(), http.MethodGet, unclosedBracketURL, &requestConfig{}, nil); err == nil {
+	if _, err := snap.newHTTPRequest(context.Background(), http.MethodGet, invalidTestURL, &requestConfig{}, nil); err == nil {
 		t.Fatal("expected invalid request URL error")
 	}
 }
 
 func TestRequestErrorPathsAndRetries(t *testing.T) {
 	t.Run("invalid URL", func(t *testing.T) {
-		if _, err := NewSession().Get(unclosedBracketURL); err == nil {
+		if _, err := NewSession().Get(invalidTestURL); err == nil {
 			t.Fatal("expected invalid URL error")
 		}
 	})
