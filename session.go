@@ -405,7 +405,7 @@ func NewSession() *Session {
 		Verify:         true,
 	}
 	s.Headers.Set("User-Agent", "go-requests/1.0")
-	s.client = s.buildClient()
+	s.client = s.buildClientLocked()
 	return s
 }
 
@@ -465,7 +465,7 @@ func (s *Session) SetTransportConfig(config TransportConfig) *Session {
 	defer s.mu.Unlock()
 	s.TransportConfig = &config
 	if !s.customClient {
-		s.client = s.buildClient()
+		s.client = s.buildClientLocked()
 	}
 	return s
 }
@@ -477,7 +477,7 @@ func (s *Session) SetClient(client *http.Client) *Session {
 	defer s.mu.Unlock()
 	if client == nil {
 		s.customClient = false
-		s.client = s.buildClient()
+		s.client = s.buildClientLocked()
 		return s
 	}
 	s.client = client
@@ -491,15 +491,16 @@ func (s *Session) SetRoundTripper(roundTripper http.RoundTripper) *Session {
 	defer s.mu.Unlock()
 	s.RoundTripper = roundTripper
 	if !s.customClient {
-		s.client = s.buildClient()
+		s.client = s.buildClientLocked()
 	}
 	return s
 }
 
-// buildClient constructs the http.Client from the current session settings.
-func (s *Session) buildClient() *http.Client {
+// buildClientLocked constructs the http.Client from the current session
+// settings. Callers must hold s.mu or be initializing a new Session.
+func (s *Session) buildClientLocked() *http.Client {
 	client := &http.Client{
-		Transport: s.buildTransport(),
+		Transport: s.buildTransportLocked(),
 		Jar:       s.Cookies,
 	}
 
@@ -512,7 +513,7 @@ func (s *Session) buildClient() *http.Client {
 	return client
 }
 
-func (s *Session) buildTransport() http.RoundTripper {
+func (s *Session) buildTransportLocked() http.RoundTripper {
 	transport, ok := cloneHTTPTransport(s.RoundTripper)
 	if !ok {
 		return s.RoundTripper
@@ -645,6 +646,8 @@ func (s sessionSnapshot) newHTTPRequest(ctx context.Context, method, rawURL stri
 			req.Header.Set(k, v)
 		}
 	}
+	// Header precedence is: session headers < automatic body Content-Type <
+	// per-request Headers < explicit ContentType option.
 	if contentType != "" && req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", contentType)
 	}
