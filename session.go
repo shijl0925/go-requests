@@ -648,8 +648,8 @@ func (s sessionSnapshot) newHTTPRequest(ctx context.Context, method, rawURL stri
 			req.Header.Set(k, v)
 		}
 	}
-	// Header precedence is: session headers < automatic body Content-Type <
-	// per-request Headers < explicit ContentType option.
+	// Header precedence from lowest to highest priority: session headers,
+	// automatic body Content-Type, per-request Headers, explicit ContentType option.
 	if contentType != "" && req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", contentType)
 	}
