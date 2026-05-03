@@ -66,7 +66,7 @@ func TestOptionApplyBranches(t *testing.T) {
 
 func TestSessionSetCookieInvalidURLAndResetClient(t *testing.T) {
 	s := NewSession()
-	if err := s.SetCookie("http://[::1", "bad", "value"); err == nil {
+	if err := s.SetCookie("http://[::1", "bad", "value"); err == nil || !strings.Contains(err.Error(), "invalid cookie URL") {
 		t.Fatal("expected invalid URL error")
 	}
 
@@ -271,6 +271,9 @@ func TestDigestAuthAdditionalBranches(t *testing.T) {
 	if got := selectDigestQOP("auth-int, auth"); got != "auth" {
 		t.Fatalf("expected auth qop, got %q", got)
 	}
+	if got := selectDigestQOP("auth"); got != "auth" {
+		t.Fatalf("expected single auth qop, got %q", got)
+	}
 	if got := parseDigestChallenge(`Digest badpart, realm="r"`); got["realm"] != "r" || got["badpart"] != "" {
 		t.Fatalf("unexpected parsed challenge: %#v", got)
 	}
@@ -426,9 +429,14 @@ func TestBuildBodyAndMultipartBranches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadForm failed: %v", err)
 	}
-	if form.Value["field"][0] != "value" || form.File["file"][0].Filename != "file" ||
-		form.File["file"][0].Header.Get("Content-Type") != "text/custom" {
-		t.Fatalf("unexpected multipart form: %#v", form)
+	if form.Value["field"][0] != "value" {
+		t.Fatalf("unexpected multipart field value: %#v", form.Value)
+	}
+	if form.File["file"][0].Filename != "file" {
+		t.Fatalf("unexpected multipart filename: %#v", form.File["file"][0])
+	}
+	if form.File["file"][0].Header.Get("Content-Type") != "text/custom" {
+		t.Fatalf("unexpected multipart content type: %#v", form.File["file"][0].Header)
 	}
 
 	pr, pw := io.Pipe()
