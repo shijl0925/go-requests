@@ -33,12 +33,16 @@ type requestConfig struct {
 	files          map[string]FileField
 	timeout        time.Duration
 	allowRedirects *bool
+	maxRedirects   *int
 	verify         *bool
 	proxies        map[string]string
 	context        context.Context
 	stream         bool
 	contentType    string
 	retry          *Retry
+	transport      *TransportConfig
+	client         *http.Client
+	roundTripper   http.RoundTripper
 }
 
 // FileField represents a file to be uploaded in a multipart request.
@@ -237,6 +241,15 @@ func (a AllowRedirects) applyOption(c *requestConfig) {
 	c.allowRedirects = &v
 }
 
+// MaxRedirects limits the number of redirects followed for a request.
+// Set to 0 to return the first redirect response without following it.
+type MaxRedirects int
+
+func (m MaxRedirects) applyOption(c *requestConfig) {
+	v := int(m)
+	c.maxRedirects = &v
+}
+
 // Verify controls whether TLS certificates are verified.
 // Set to false to skip verification (equivalent to Python's verify=False).
 type Verify bool
@@ -256,6 +269,40 @@ func (p Proxies) applyOption(c *requestConfig) {
 	for k, v := range p {
 		c.proxies[k] = v
 	}
+}
+
+// TransportConfig exposes common http.Transport connection-pool and timeout
+// settings. Zero-value fields leave the underlying transport defaults intact.
+type TransportConfig struct {
+	MaxIdleConns          int
+	MaxIdleConnsPerHost   int
+	MaxConnsPerHost       int
+	IdleConnTimeout       time.Duration
+	TLSHandshakeTimeout   time.Duration
+	ResponseHeaderTimeout time.Duration
+	ExpectContinueTimeout time.Duration
+}
+
+func (tc TransportConfig) applyOption(c *requestConfig) {
+	c.transport = &tc
+}
+
+// HTTPClient uses a custom *http.Client for a single request.
+type HTTPClient struct {
+	Client *http.Client
+}
+
+func (hc HTTPClient) applyOption(c *requestConfig) {
+	c.client = hc.Client
+}
+
+// RoundTripper uses a custom http.RoundTripper for a single request.
+type RoundTripper struct {
+	Transport http.RoundTripper
+}
+
+func (rt RoundTripper) applyOption(c *requestConfig) {
+	c.roundTripper = rt.Transport
 }
 
 // WithContext attaches a context to the request. This can be used to cancel or
@@ -318,8 +365,18 @@ type Session struct {
 	// Proxies maps scheme to proxy URL.
 	Proxies map[string]string
 
+	// TransportConfig configures the default HTTP transport.
+	TransportConfig *TransportConfig
+
+	// RoundTripper is the default transport used by this session. When set to a
+	// non-*http.Transport value, Verify, Proxies, and TransportConfig are not
+	// applied to it.
+	RoundTripper http.RoundTripper
+
 	// client is the underlying HTTP client.
 	client *http.Client
+	// customClient indicates client was provided by the caller.
+	customClient bool
 }
 
 // NewSession creates a new Session with sensible defaults.
@@ -364,26 +421,35 @@ func (s *Session) SetTimeout(timeout time.Duration) *Session {
 	return s
 }
 
+// SetTransportConfig configures the default HTTP transport for this session.
+func (s *Session) SetTransportConfig(config TransportConfig) *Session {
+	s.TransportConfig = &config
+	return s
+}
+
+// SetClient sets the underlying HTTP client for this session.
+// Passing nil restores the default client built from session settings.
+func (s *Session) SetClient(client *http.Client) *Session {
+	if client == nil {
+		s.customClient = false
+		s.client = s.buildClient()
+		return s
+	}
+	s.client = client
+	s.customClient = true
+	return s
+}
+
+// SetRoundTripper sets the default RoundTripper for this session.
+func (s *Session) SetRoundTripper(roundTripper http.RoundTripper) *Session {
+	s.RoundTripper = roundTripper
+	return s
+}
+
 // buildClient constructs the http.Client from the current session settings.
 func (s *Session) buildClient() *http.Client {
-	transport := &http.Transport{}
-
-	if !s.Verify {
-		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // user-controlled setting
-	}
-
-	if len(s.Proxies) > 0 {
-		transport.Proxy = func(req *http.Request) (*url.URL, error) {
-			scheme := req.URL.Scheme
-			if proxyURL, ok := s.Proxies[scheme]; ok {
-				return url.Parse(proxyURL)
-			}
-			return nil, nil
-		}
-	}
-
 	client := &http.Client{
-		Transport: transport,
+		Transport: s.buildTransport(),
 		Jar:       s.Cookies,
 	}
 
@@ -394,6 +460,21 @@ func (s *Session) buildClient() *http.Client {
 	}
 
 	return client
+}
+
+func (s *Session) buildTransport() http.RoundTripper {
+	transport, ok := cloneHTTPTransport(s.RoundTripper)
+	if !ok {
+		return s.RoundTripper
+	}
+
+	if !s.Verify {
+		setInsecureSkipVerify(transport, true)
+	}
+
+	applyProxies(transport, s.Proxies)
+	applyTransportConfig(transport, s.TransportConfig)
+	return transport
 }
 
 // request executes an HTTP request with the given method, URL, and options.
@@ -646,51 +727,137 @@ func retryDelay(retry *Retry, attempt int) time.Duration {
 	return time.Duration(delay)
 }
 
-// buildEffectiveClient returns a client that respects per-request overrides
-// (AllowRedirects, Verify, Proxies).
+// buildEffectiveClient returns a client that respects per-request overrides.
 func (s *Session) buildEffectiveClient(cfg *requestConfig) *http.Client {
-	// Fast path: no overrides.
-	if cfg.allowRedirects == nil && cfg.verify == nil && cfg.proxies == nil {
-		return s.client
+	base := s.client
+	if cfg.client != nil {
+		base = cfg.client
+	} else if !s.customClient {
+		base = s.buildClient()
 	}
 
-	// Clone transport.
-	base := s.client.Transport.(*http.Transport)
-	t := base.Clone()
-
-	if cfg.verify != nil && !*cfg.verify {
-		t.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
+	client := cloneHTTPClient(base)
+	if client.Jar == nil {
+		client.Jar = s.Cookies
 	}
 
-	if cfg.proxies != nil {
-		proxies := cfg.proxies
-		t.Proxy = func(req *http.Request) (*url.URL, error) {
-			if u, ok := proxies[req.URL.Scheme]; ok {
-				return url.Parse(u)
+	if cfg.roundTripper != nil {
+		client.Transport = cfg.roundTripper
+	} else if cfg.verify != nil || cfg.proxies != nil || cfg.transport != nil {
+		t, ok := cloneHTTPTransport(client.Transport)
+		if ok {
+			if cfg.verify != nil {
+				setInsecureSkipVerify(t, !*cfg.verify)
 			}
-			return nil, nil
+			if cfg.proxies != nil {
+				applyProxies(t, cfg.proxies)
+			}
+			if cfg.transport != nil {
+				applyTransportConfig(t, cfg.transport)
+			}
+			client.Transport = t
 		}
 	}
-
-	client := &http.Client{
-		Transport: t,
-		Jar:       s.client.Jar,
-		Timeout:   s.client.Timeout,
+	if client.Transport == nil {
+		client.Transport = http.DefaultTransport
 	}
 
-	if cfg.allowRedirects != nil && !*cfg.allowRedirects {
-		client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
-			return http.ErrUseLastResponse
-		}
-	} else if s.AllowRedirects {
-		client.CheckRedirect = nil
-	} else {
-		client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
-			return http.ErrUseLastResponse
-		}
-	}
-
+	applyRedirectPolicy(client, s.AllowRedirects, cfg.allowRedirects, cfg.maxRedirects)
 	return client
+}
+
+func cloneHTTPClient(client *http.Client) *http.Client {
+	if client == nil {
+		return &http.Client{}
+	}
+	c := *client
+	return &c
+}
+
+func cloneHTTPTransport(roundTripper http.RoundTripper) (*http.Transport, bool) {
+	if roundTripper == nil {
+		return http.DefaultTransport.(*http.Transport).Clone(), true
+	}
+	t, ok := roundTripper.(*http.Transport)
+	if !ok {
+		return nil, false
+	}
+	return t.Clone(), true
+}
+
+func setInsecureSkipVerify(transport *http.Transport, insecure bool) {
+	cfg := transport.TLSClientConfig
+	if cfg == nil {
+		cfg = &tls.Config{}
+	} else {
+		cfg = cfg.Clone()
+	}
+	cfg.InsecureSkipVerify = insecure //nolint:gosec // user-controlled setting
+	transport.TLSClientConfig = cfg
+}
+
+func applyProxies(transport *http.Transport, proxies map[string]string) {
+	if len(proxies) == 0 {
+		return
+	}
+	transport.Proxy = func(req *http.Request) (*url.URL, error) {
+		if proxyURL, ok := proxies[req.URL.Scheme]; ok {
+			return url.Parse(proxyURL)
+		}
+		return nil, nil
+	}
+}
+
+func applyTransportConfig(transport *http.Transport, config *TransportConfig) {
+	if config == nil {
+		return
+	}
+	if config.MaxIdleConns > 0 {
+		transport.MaxIdleConns = config.MaxIdleConns
+	}
+	if config.MaxIdleConnsPerHost > 0 {
+		transport.MaxIdleConnsPerHost = config.MaxIdleConnsPerHost
+	}
+	if config.MaxConnsPerHost > 0 {
+		transport.MaxConnsPerHost = config.MaxConnsPerHost
+	}
+	if config.IdleConnTimeout > 0 {
+		transport.IdleConnTimeout = config.IdleConnTimeout
+	}
+	if config.TLSHandshakeTimeout > 0 {
+		transport.TLSHandshakeTimeout = config.TLSHandshakeTimeout
+	}
+	if config.ResponseHeaderTimeout > 0 {
+		transport.ResponseHeaderTimeout = config.ResponseHeaderTimeout
+	}
+	if config.ExpectContinueTimeout > 0 {
+		transport.ExpectContinueTimeout = config.ExpectContinueTimeout
+	}
+}
+
+func applyRedirectPolicy(client *http.Client, sessionAllowRedirects bool, requestAllowRedirects *bool, requestMaxRedirects *int) {
+	allowRedirects := sessionAllowRedirects
+	if requestAllowRedirects != nil {
+		allowRedirects = *requestAllowRedirects
+	}
+	if !allowRedirects {
+		client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+		return
+	}
+	if requestMaxRedirects != nil {
+		maxRedirects := *requestMaxRedirects
+		if maxRedirects < 0 {
+			maxRedirects = 0
+		}
+		client.CheckRedirect = func(_ *http.Request, via []*http.Request) error {
+			if len(via) > maxRedirects {
+				return http.ErrUseLastResponse
+			}
+			return nil
+		}
+	}
 }
 
 // buildBody constructs the request body io.Reader and Content-Type from cfg.

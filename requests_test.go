@@ -975,3 +975,126 @@ func TestSessionSetters(t *testing.T) {
 		t.Fatalf("expected 204, got %d: %s", resp.StatusCode, resp.Text())
 	}
 }
+
+func TestMaxRedirectsOption(t *testing.T) {
+	srv, baseURL := newTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			http.Redirect(w, r, "/one", http.StatusFound)
+		case "/one":
+			http.Redirect(w, r, "/two", http.StatusFound)
+		case "/two":
+			fmt.Fprint(w, "done")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	resp, err := requests.Get(baseURL, requests.MaxRedirects(1))
+	if err != nil {
+		t.Fatalf("Get with MaxRedirects failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("expected redirect response after one redirect, got %d", resp.StatusCode)
+	}
+	if resp.URL.Path != "/one" {
+		t.Fatalf("expected to stop at /one, got %s", resp.URL.Path)
+	}
+}
+
+func TestMaxRedirectsZeroStopsImmediately(t *testing.T) {
+	srv, baseURL := newTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/next", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	resp, err := requests.Get(baseURL, requests.MaxRedirects(0))
+	if err != nil {
+		t.Fatalf("Get with MaxRedirects(0) failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusFound || (resp.URL.Path != "" && resp.URL.Path != "/") {
+		t.Fatalf("expected first redirect response, got status=%d url=%s", resp.StatusCode, resp.URL.Path)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestCustomHTTPClientAndRoundTripper(t *testing.T) {
+	calls := 0
+	rt := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		if req.URL.Host != "example.test" {
+			t.Fatalf("unexpected host: %s", req.URL.Host)
+		}
+		return &http.Response{
+			StatusCode: http.StatusAccepted,
+			Status:     "202 Accepted",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("custom client")),
+			Request:    req,
+		}, nil
+	})
+	client := &http.Client{Transport: rt}
+
+	resp, err := requests.Get("http://example.test", requests.HTTPClient{Client: client})
+	if err != nil {
+		t.Fatalf("Get with custom client failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusAccepted || resp.Text() != "custom client" {
+		t.Fatalf("unexpected custom client response: status=%d body=%q", resp.StatusCode, resp.Text())
+	}
+
+	resp, err = requests.Get("http://example.test", requests.RoundTripper{Transport: rt})
+	if err != nil {
+		t.Fatalf("Get with custom round tripper failed: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("expected two custom transport calls, got %d", calls)
+	}
+
+	s := requests.NewSession().SetClient(client)
+	resp, err = s.Get("http://example.test")
+	if err != nil {
+		t.Fatalf("Get with session client failed: %v", err)
+	}
+	if calls != 3 || resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("unexpected session client result: calls=%d status=%d", calls, resp.StatusCode)
+	}
+}
+
+func TestSessionRoundTripperAndTransportConfig(t *testing.T) {
+	calls := 0
+	rt := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{
+			StatusCode: http.StatusCreated,
+			Status:     "201 Created",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("session transport")),
+			Request:    req,
+		}, nil
+	})
+
+	s := requests.NewSession().
+		SetTransportConfig(requests.TransportConfig{
+			MaxIdleConns:        20,
+			MaxIdleConnsPerHost: 10,
+			IdleConnTimeout:     time.Minute,
+		}).
+		SetRoundTripper(rt)
+	resp, err := s.Get("http://example.test")
+	if err != nil {
+		t.Fatalf("Get with session round tripper failed: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("expected one round trip, got %d", calls)
+	}
+	if resp.StatusCode != http.StatusCreated || resp.Text() != "session transport" {
+		t.Fatalf("unexpected session round tripper response: status=%d body=%q", resp.StatusCode, resp.Text())
+	}
+}

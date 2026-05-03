@@ -45,9 +45,11 @@ func main() {
 - Authentication: Basic Auth, Bearer Token, Digest Auth
 - Request timeout (`Timeout`)
 - Automatic retries for replayable requests (`Retry`)
-- Redirect control (`AllowRedirects`)
+- Redirect control (`AllowRedirects`, `MaxRedirects`)
 - TLS verification control (`Verify`)
 - Proxy support (`Proxies`)
+- Transport and connection-pool configuration (`TransportConfig`)
+- Custom HTTP clients and transports (`HTTPClient`, `RoundTripper`)
 - Context support (`WithContext`)
 - Common header shortcuts (`Header`, `UserAgent`, `Referer`, `Accept`, `ContentType`)
 - Streaming responses (`Stream`)
@@ -223,6 +225,14 @@ resp, err := requests.Get("https://httpbin.org/redirect/1",
 fmt.Println(resp.IsRedirect()) // true
 ```
 
+Limit redirects for a single request:
+
+```go
+resp, err := requests.Get("https://httpbin.org/redirect/3",
+    requests.MaxRedirects(1),
+)
+```
+
 ### Disable TLS Verification
 
 ```go
@@ -237,6 +247,42 @@ resp, err := requests.Get("https://self-signed.example.com",
 resp, err := requests.Get("https://httpbin.org/get",
     requests.Proxies{"https": "http://proxy.example.com:8080"},
 )
+```
+
+### Transport Configuration
+
+```go
+s := requests.NewSession()
+s.SetTransportConfig(requests.TransportConfig{
+    MaxIdleConns:        100,
+    MaxIdleConnsPerHost: 10,
+    IdleConnTimeout:     90 * time.Second,
+})
+```
+
+You can also apply transport settings to a single request:
+
+```go
+resp, err := requests.Get("https://api.example.com/resource",
+    requests.TransportConfig{MaxIdleConns: 100, IdleConnTimeout: 90 * time.Second},
+)
+```
+
+### Custom Client or RoundTripper
+
+```go
+client := &http.Client{Transport: customTransport}
+resp, err := requests.Get("https://api.example.com/resource",
+    requests.HTTPClient{Client: client},
+)
+```
+
+For session-wide customization:
+
+```go
+s := requests.NewSession()
+s.SetClient(client)
+s.SetRoundTripper(customTransport)
 ```
 
 ### Context
