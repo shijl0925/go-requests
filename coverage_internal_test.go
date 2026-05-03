@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const invalidIPv6BracketURL = "http://[::1"
+const malformedIPv6URL = "http://[::1"
 
 func TestTopLevelAndSessionRequest(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -68,7 +68,7 @@ func TestOptionApplyBranches(t *testing.T) {
 
 func TestSessionSetCookieInvalidURLAndResetClient(t *testing.T) {
 	s := NewSession()
-	if err := s.SetCookie(invalidIPv6BracketURL, "testCookie", "value"); err == nil || !strings.Contains(err.Error(), "invalid cookie URL") {
+	if err := s.SetCookie(malformedIPv6URL, "testCookie", "value"); err == nil || !strings.Contains(err.Error(), "invalid cookie URL") {
 		t.Fatal("expected invalid URL error")
 	}
 
@@ -186,14 +186,14 @@ func TestNewHTTPRequestErrorsAndHeaderPrecedence(t *testing.T) {
 		t.Fatalf("cookie missing: %v", err)
 	}
 
-	if _, err := snap.newHTTPRequest(context.Background(), http.MethodGet, invalidIPv6BracketURL, &requestConfig{}, nil); err == nil {
+	if _, err := snap.newHTTPRequest(context.Background(), http.MethodGet, malformedIPv6URL, &requestConfig{}, nil); err == nil {
 		t.Fatal("expected invalid request URL error")
 	}
 }
 
 func TestRequestErrorPathsAndRetries(t *testing.T) {
 	t.Run("invalid URL", func(t *testing.T) {
-		if _, err := NewSession().Get(invalidIPv6BracketURL); err == nil {
+		if _, err := NewSession().Get(malformedIPv6URL); err == nil {
 			t.Fatal("expected invalid URL error")
 		}
 	})
@@ -421,7 +421,7 @@ func TestBuildBodyAndMultipartBranches(t *testing.T) {
 	cfg := &requestConfig{
 		data: url.Values{"field": {"value"}},
 		files: map[string]FileField{
-			"file": {FileName: "", Content: strings.NewReader("data"), ContentType: "text/custom"},
+			"file": {FileName: "file", Content: strings.NewReader("data"), ContentType: "text/custom"},
 		},
 	}
 	body, contentType, err := buildMultipart(cfg)
