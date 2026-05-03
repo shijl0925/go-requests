@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -315,6 +317,51 @@ func TestTokenAuth(t *testing.T) {
 	}
 }
 
+func TestDigestAuthClosesInitialStreamResponse(t *testing.T) {
+	firstBody := &closeTrackingReadCloser{reader: strings.NewReader("unauthorized")}
+	calls := 0
+	rt := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			header := make(http.Header)
+			header.Set("WWW-Authenticate", `Digest realm="test", nonce="nonce-value"`)
+			return &http.Response{
+				StatusCode: http.StatusUnauthorized,
+				Status:     "401 Unauthorized",
+				Header:     header,
+				Body:       firstBody,
+				Request:    req,
+			}, nil
+		}
+		if req.Header.Get("Authorization") == "" {
+			t.Fatal("expected digest Authorization header on retry")
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("ok")),
+			Request:    req,
+		}, nil
+	})
+
+	resp, err := requests.Get("http://example.test",
+		requests.RoundTripper{Transport: rt},
+		requests.Stream(true),
+		requests.Auth{Provider: requests.DigestAuth{Username: "user", Password: "pass"}},
+	)
+	if err != nil {
+		t.Fatalf("Get with digest auth failed: %v", err)
+	}
+	defer resp.Close()
+	if calls != 2 {
+		t.Fatalf("expected digest retry, got %d calls", calls)
+	}
+	if !firstBody.closed {
+		t.Fatal("expected initial 401 response body to be closed before digest retry")
+	}
+}
+
 func TestResponseOk(t *testing.T) {
 	srv, baseURL := newTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -470,6 +517,33 @@ func TestSession(t *testing.T) {
 		if headers["X-Session-Header"] != "persistent" {
 			t.Errorf("request %d: expected X-Session-Header=persistent, got %v", i, headers["X-Session-Header"])
 		}
+	}
+}
+
+func TestSessionReusesDefaultTransport(t *testing.T) {
+	var newConnections int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "ok")
+	}))
+	srv.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			atomic.AddInt32(&newConnections, 1)
+		}
+	}
+	defer srv.Close()
+
+	s := requests.NewSession()
+	for i := 0; i < 2; i++ {
+		resp, err := s.Get(srv.URL)
+		if err != nil {
+			t.Fatalf("request %d failed: %v", i+1, err)
+		}
+		if resp.Text() != "ok" {
+			t.Fatalf("request %d got body %q", i+1, resp.Text())
+		}
+	}
+	if got := atomic.LoadInt32(&newConnections); got != 1 {
+		t.Fatalf("expected one reused connection, got %d", got)
 	}
 }
 
@@ -883,6 +957,24 @@ func TestCommonHeaderOptionsAndContentType(t *testing.T) {
 	}
 }
 
+func TestHeadersContentTypeOverridesAutomaticBodyContentType(t *testing.T) {
+	srv, baseURL := newTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, r.Header.Get("Content-Type"))
+	}))
+	defer srv.Close()
+
+	resp, err := requests.Post(baseURL,
+		requests.JSON{"hello": "world"},
+		requests.Headers{"Content-Type": "application/vnd.example+json; charset=utf-8"},
+	)
+	if err != nil {
+		t.Fatalf("Post failed: %v", err)
+	}
+	if resp.Text() != "application/vnd.example+json; charset=utf-8" {
+		t.Fatalf("unexpected Content-Type: %q", resp.Text())
+	}
+}
+
 func TestResponseHelpersSaveToFileAndElapsed(t *testing.T) {
 	srv, baseURL := newTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1022,6 +1114,20 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+type closeTrackingReadCloser struct {
+	reader io.Reader
+	closed bool
+}
+
+func (c *closeTrackingReadCloser) Read(p []byte) (int, error) {
+	return c.reader.Read(p)
+}
+
+func (c *closeTrackingReadCloser) Close() error {
+	c.closed = true
+	return nil
 }
 
 func TestCustomHTTPClientAndRoundTripper(t *testing.T) {

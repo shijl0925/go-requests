@@ -116,7 +116,7 @@ func newDigestCNonce() string {
 func parseDigestChallenge(header string) map[string]string {
 	params := make(map[string]string)
 	header = strings.TrimPrefix(header, "Digest ")
-	for _, part := range strings.Split(header, ",") {
+	for _, part := range splitDigestChallenge(header) {
 		part = strings.TrimSpace(part)
 		kv := strings.SplitN(part, "=", 2)
 		if len(kv) != 2 {
@@ -127,4 +127,26 @@ func parseDigestChallenge(header string) map[string]string {
 		params[key] = value
 	}
 	return params
+}
+
+func splitDigestChallenge(header string) []string {
+	var parts []string
+	start := 0
+	inQuotes := false
+	escaped := false
+	for i, r := range header {
+		switch {
+		case escaped:
+			escaped = false
+		case r == '\\' && inQuotes:
+			escaped = true
+		case r == '"':
+			inQuotes = !inQuotes
+		case r == ',' && !inQuotes:
+			parts = append(parts, header[start:i])
+			start = i + 1
+		}
+	}
+	parts = append(parts, header[start:])
+	return parts
 }

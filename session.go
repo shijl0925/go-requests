@@ -424,6 +424,9 @@ func (s *Session) SetTimeout(timeout time.Duration) *Session {
 // SetTransportConfig configures the default HTTP transport for this session.
 func (s *Session) SetTransportConfig(config TransportConfig) *Session {
 	s.TransportConfig = &config
+	if !s.customClient {
+		s.client = s.buildClient()
+	}
 	return s
 }
 
@@ -443,6 +446,9 @@ func (s *Session) SetClient(client *http.Client) *Session {
 // SetRoundTripper sets the default RoundTripper for this session.
 func (s *Session) SetRoundTripper(roundTripper http.RoundTripper) *Session {
 	s.RoundTripper = roundTripper
+	if !s.customClient {
+		s.client = s.buildClient()
+	}
 	return s
 }
 
@@ -552,6 +558,7 @@ func (s *Session) request(method, rawURL string, opts []Option) (*Response, erro
 			if da, ok := auth.(DigestAuth); ok {
 				wwwAuth := httpResp.Header.Get("WWW-Authenticate")
 				if strings.HasPrefix(wwwAuth, "Digest ") {
+					_ = resp.Close()
 					resp, err = s.retryDigestAuth(ctx, client, req, method, parsedURL.String(), cfg, da, wwwAuth, start)
 					if err != nil {
 						return nil, err
@@ -593,16 +600,15 @@ func (s *Session) newHTTPRequest(ctx context.Context, method, rawURL string, cfg
 			req.Header.Set(k, v)
 		}
 	}
+	if contentType != "" && req.Header.Get("Content-Type") == "" {
+		req.Header.Set("Content-Type", contentType)
+	}
 	if cfg.headers != nil {
 		for k, vals := range cfg.headers {
 			for _, v := range vals {
 				req.Header.Set(k, v)
 			}
 		}
-	}
-
-	if contentType != "" {
-		req.Header.Set("Content-Type", contentType)
 	}
 	if cfg.contentType != "" {
 		req.Header.Set("Content-Type", cfg.contentType)
@@ -732,8 +738,6 @@ func (s *Session) buildEffectiveClient(cfg *requestConfig) *http.Client {
 	base := s.client
 	if cfg.client != nil {
 		base = cfg.client
-	} else if !s.customClient {
-		base = s.buildClient()
 	}
 
 	client := cloneHTTPClient(base)
