@@ -369,7 +369,7 @@ func TestResponseEdgeCases(t *testing.T) {
 			StatusCode: http.StatusTeapot,
 			Status:     "418 I'm a teapot",
 			URL:        mustParseURL(t, "http://example.test/tea"),
-			Headers:    http.Header{"Content-Type": {"text/plain; Charset=ISO-8859-1"}},
+			Headers:    http.Header{"Content-Type": {"text/plain; charset=ISO-8859-1"}},
 			body:       []byte("{bad"),
 			bodyRead:   true,
 		}
