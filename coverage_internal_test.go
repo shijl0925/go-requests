@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const invalidTestURL = "http://[::1"
+const invalidIPv6BracketURL = "http://[::1"
 
 func TestTopLevelAndSessionRequest(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -68,7 +68,7 @@ func TestOptionApplyBranches(t *testing.T) {
 
 func TestSessionSetCookieInvalidURLAndResetClient(t *testing.T) {
 	s := NewSession()
-	if err := s.SetCookie(invalidTestURL, "testCookie", "value"); err == nil || !strings.Contains(err.Error(), "invalid cookie URL") {
+	if err := s.SetCookie(invalidIPv6BracketURL, "testCookie", "value"); err == nil || !strings.Contains(err.Error(), "invalid cookie URL") {
 		t.Fatal("expected invalid URL error")
 	}
 
@@ -186,14 +186,14 @@ func TestNewHTTPRequestErrorsAndHeaderPrecedence(t *testing.T) {
 		t.Fatalf("cookie missing: %v", err)
 	}
 
-	if _, err := snap.newHTTPRequest(context.Background(), http.MethodGet, invalidTestURL, &requestConfig{}, nil); err == nil {
+	if _, err := snap.newHTTPRequest(context.Background(), http.MethodGet, invalidIPv6BracketURL, &requestConfig{}, nil); err == nil {
 		t.Fatal("expected invalid request URL error")
 	}
 }
 
 func TestRequestErrorPathsAndRetries(t *testing.T) {
 	t.Run("invalid URL", func(t *testing.T) {
-		if _, err := NewSession().Get(invalidTestURL); err == nil {
+		if _, err := NewSession().Get(invalidIPv6BracketURL); err == nil {
 			t.Fatal("expected invalid URL error")
 		}
 	})
@@ -404,8 +404,8 @@ func TestBuildBodyAndMultipartBranches(t *testing.T) {
 	if body, contentType, err := buildBody(&requestConfig{}); err != nil || body != http.NoBody || contentType != "" {
 		t.Fatalf("unexpected empty body: %T %q %v", body, contentType, err)
 	}
-	if _, _, err := buildBody(&requestConfig{jsonBody: make(chan int)}); err == nil {
-		t.Fatal("expected JSON marshal error")
+	if _, _, err := buildBody(&requestConfig{jsonBody: make(chan int)}); err == nil || !strings.Contains(err.Error(), "failed to marshal JSON body") {
+		t.Fatalf("expected JSON marshal error, got %v", err)
 	}
 	if body, contentType, err := buildBody(&requestConfig{data: url.Values{"a": {"b"}}}); err != nil || contentType != "application/x-www-form-urlencoded" {
 		t.Fatalf("unexpected form body: %q %v", contentType, err)
