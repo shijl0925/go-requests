@@ -46,13 +46,14 @@ type requestConfig struct {
 	context        context.Context
 	// stream is a pointer so Stream(false) can override a session default of
 	// streaming=true; nil means use the session default.
-	stream       *bool
-	contentType  string
-	retry        *Retry
-	transport    *TransportConfig
-	client       *http.Client
-	roundTripper http.RoundTripper
-	maxBodyBytes *int64
+	stream         *bool
+	contentType    string
+	retry          *Retry
+	retryStatusSet map[int]struct{}
+	transport      *TransportConfig
+	client         *http.Client
+	roundTripper   http.RoundTripper
+	maxBodyBytes   *int64
 }
 
 // FileField represents a file to be uploaded in a multipart request.
@@ -396,6 +397,12 @@ type Retry struct {
 
 func (r Retry) applyOption(c *requestConfig) {
 	c.retry = &r
+	if len(r.StatusCodes) > 8 {
+		c.retryStatusSet = make(map[int]struct{}, len(r.StatusCodes))
+		for _, code := range r.StatusCodes {
+			c.retryStatusSet[code] = struct{}{}
+		}
+	}
 }
 
 // ---- Session ---------------------------------------------------------------
@@ -800,7 +807,7 @@ func shouldRetryResponse(resp *Response, cfg *requestConfig, method string, atte
 	if attempt+1 >= maxAttempts || !retryAllowed(cfg, method) {
 		return false
 	}
-	return shouldRetryStatusCode(resp.StatusCode, cfg.retry)
+	return shouldRetryStatusCode(resp.StatusCode, cfg)
 }
 
 func retryAllowed(cfg *requestConfig, method string) bool {
@@ -822,9 +829,13 @@ func isReplayable(cfg *requestConfig) bool {
 	return cfg.rawBody == nil && len(cfg.files) == 0
 }
 
-func shouldRetryStatusCode(statusCode int, retry *Retry) bool {
-	if retry != nil && len(retry.StatusCodes) > 0 {
-		for _, code := range retry.StatusCodes {
+func shouldRetryStatusCode(statusCode int, cfg *requestConfig) bool {
+	if cfg != nil && cfg.retry != nil && len(cfg.retry.StatusCodes) > 0 {
+		if cfg.retryStatusSet != nil {
+			_, ok := cfg.retryStatusSet[statusCode]
+			return ok
+		}
+		for _, code := range cfg.retry.StatusCodes {
 			if statusCode == code {
 				return true
 			}
