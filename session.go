@@ -463,8 +463,11 @@ func NewSession() *Session {
 	return s
 }
 
-// NewFastSession creates a Session with an enlarged connection pool for
-// high-concurrency workloads. Reuse the returned session for best performance.
+// NewFastSession creates a Session tuned for long-lived, high-concurrency
+// workloads. It applies PerformanceTransportConfig and enables streaming by
+// default so large responses are not automatically buffered in memory. Use
+// NewSession when you prefer the standard convenience behavior that caches
+// response bodies for Text, Content, and JSON helpers.
 func NewFastSession() *Session {
 	s := NewSession()
 	s.Stream = true
@@ -817,6 +820,8 @@ func isReplayable(cfg *requestConfig) bool {
 	return cfg.rawBody == nil && len(cfg.files) == 0
 }
 
+// defaultRetryStatusCodes is the shared fallback used by retryStatusCodes when
+// callers do not provide a custom Retry.StatusCodes list.
 var defaultRetryStatusCodes = []int{
 	http.StatusTooManyRequests,
 	http.StatusInternalServerError,
