@@ -47,14 +47,18 @@ type requestConfig struct {
 	context        context.Context
 	// stream is a pointer so Stream(false) can override a session default of
 	// streaming=true; nil means use the session default.
-	stream         *bool
-	contentType    string
-	retry          *Retry
+	stream      *bool
+	contentType string
+	retry       *Retry
+	// retryStatusSet is an O(1) lookup optimization for large custom retry
+	// status code lists.
 	retryStatusSet map[int]struct{}
 	transport      *TransportConfig
 	client         *http.Client
 	roundTripper   http.RoundTripper
-	maxBodyBytes   *int64
+	// maxBodyBytes limits automatic response body reads for non-streaming
+	// requests.
+	maxBodyBytes *int64
 }
 
 // FileField represents a file to be uploaded in a multipart request.
@@ -480,9 +484,11 @@ func NewSession() *Session {
 
 // NewFastSession creates a Session tuned for long-lived, high-concurrency
 // workloads. It applies PerformanceTransportConfig and enables streaming by
-// default so large responses are not automatically buffered in memory. Use
-// NewSession when you prefer the standard convenience behavior that caches
-// response bodies for Text, Content, and JSON helpers.
+// default so large responses are not automatically buffered in memory. Callers
+// must read or close streamed response bodies; use Stream(false) on a request
+// when Text, Content, or JSON helpers should cache the body. Use NewSession
+// when you prefer the standard convenience behavior that caches response bodies
+// by default.
 func NewFastSession() *Session {
 	s := NewSession()
 	s.Stream = true

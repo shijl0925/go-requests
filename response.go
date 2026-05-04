@@ -84,21 +84,30 @@ func readResponseBody(body io.Reader, maxBodyBytes *int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if limited.N == 0 {
-		// The limit was exactly reached; read one more byte to distinguish an
-		// exact-size response from an oversized one. For example, when limit=6,
-		// an immediate EOF means a 6-byte body is allowed, while successfully
-		// reading another byte means a 7+ byte body must fail.
-		var extra [1]byte
-		n, err := body.Read(extra[:])
-		if err != nil && err != io.EOF {
-			return nil, err
-		}
-		if n > 0 {
-			return nil, fmt.Errorf("go-requests: response body exceeds max size %d", limit)
-		}
+	if err := checkExactLimit(body, limited, limit); err != nil {
+		return nil, err
 	}
 	return data, nil
+}
+
+func checkExactLimit(body io.Reader, limited *io.LimitedReader, limit int64) error {
+	if limited.N > 0 {
+		return nil
+	}
+
+	// The limit was exactly reached; read one more byte to distinguish an
+	// exact-size response from an oversized one. For example, when limit=6,
+	// an immediate EOF means a 6-byte body is allowed, while successfully
+	// reading another byte means a 7+ byte body must fail.
+	var extra [1]byte
+	n, err := body.Read(extra[:])
+	if err != nil && err != io.EOF {
+		return err
+	}
+	if n > 0 {
+		return fmt.Errorf("go-requests: response body exceeds max size %d", limit)
+	}
+	return nil
 }
 
 // Body returns the underlying response body for streaming reads.
