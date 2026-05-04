@@ -2,6 +2,7 @@ package requests
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -47,7 +48,7 @@ type Response struct {
 // newResponse creates a Response from a *http.Response. By default it reads and
 // closes the response body so it is available for repeated access. In streaming
 // mode, the caller is responsible for reading or closing the body.
-func newResponse(r *http.Response, stream bool) (*Response, error) {
+func newResponse(r *http.Response, stream bool, maxBodyBytes *int64) (*Response, error) {
 	resp := &Response{
 		StatusCode:  r.StatusCode,
 		Status:      r.Status,
@@ -63,13 +64,50 @@ func newResponse(r *http.Response, stream bool) (*Response, error) {
 	}
 
 	defer r.Body.Close()
-	body, err := io.ReadAll(r.Body)
+	body, err := readResponseBody(r.Body, maxBodyBytes)
 	if err != nil {
 		return nil, err
 	}
 	resp.body = body
 	resp.bodyRead = true
 	return resp, nil
+}
+
+func readResponseBody(body io.Reader, maxBodyBytes *int64) ([]byte, error) {
+	if maxBodyBytes == nil || *maxBodyBytes <= 0 {
+		return io.ReadAll(body)
+	}
+
+	limit := *maxBodyBytes
+	limited := &io.LimitedReader{R: body, N: limit}
+	data, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkExactLimit(body, limited, limit); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func checkExactLimit(body io.Reader, limited *io.LimitedReader, limit int64) error {
+	if limited.N > 0 {
+		return nil
+	}
+
+	// The limit was exactly reached; read one more byte to distinguish an
+	// exact-size response from an oversized one. For example, when limit=6,
+	// an immediate EOF means a 6-byte body is allowed, while successfully
+	// reading another byte means a 7+ byte body must fail.
+	var extra [1]byte
+	n, err := body.Read(extra[:])
+	if err != nil && err != io.EOF {
+		return err
+	}
+	if n > 0 {
+		return fmt.Errorf("go-requests: response body exceeds max size %d", limit)
+	}
+	return nil
 }
 
 // Body returns the underlying response body for streaming reads.

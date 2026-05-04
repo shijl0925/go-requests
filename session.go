@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -23,6 +24,12 @@ type Option interface {
 }
 
 // requestConfig holds the accumulated options for a single request.
+const (
+	defaultDialTimeout          = 30 * time.Second
+	defaultKeepAlive            = 30 * time.Second
+	retryStatusCodeMapThreshold = 8
+)
+
 type requestConfig struct {
 	params         url.Values
 	headers        http.Header
@@ -38,12 +45,20 @@ type requestConfig struct {
 	verify         *bool
 	proxies        map[string]string
 	context        context.Context
-	stream         bool
-	contentType    string
-	retry          *Retry
+	// stream is a pointer so Stream(false) can override a session default of
+	// streaming=true; nil means use the session default.
+	stream      *bool
+	contentType string
+	retry       *Retry
+	// retryStatusSet is an O(1) lookup optimization for large custom retry
+	// status code lists.
+	retryStatusSet map[int]struct{}
 	transport      *TransportConfig
 	client         *http.Client
 	roundTripper   http.RoundTripper
+	// maxBodyBytes limits automatic response body reads for non-streaming
+	// requests.
+	maxBodyBytes *int64
 }
 
 // FileField represents a file to be uploaded in a multipart request.
@@ -212,7 +227,8 @@ func (b Body) applyOption(c *requestConfig) {
 type Stream bool
 
 func (s Stream) applyOption(c *requestConfig) {
-	c.stream = bool(s)
+	v := bool(s)
+	c.stream = &v
 }
 
 // Files sets multipart file uploads. The map key is the form field name.
@@ -275,17 +291,63 @@ func (p Proxies) applyOption(c *requestConfig) {
 // TransportConfig exposes common http.Transport connection-pool and timeout
 // settings. Zero-value fields leave the underlying transport defaults intact.
 type TransportConfig struct {
-	MaxIdleConns          int
-	MaxIdleConnsPerHost   int
-	MaxConnsPerHost       int
-	IdleConnTimeout       time.Duration
-	TLSHandshakeTimeout   time.Duration
-	ResponseHeaderTimeout time.Duration
-	ExpectContinueTimeout time.Duration
+	MaxIdleConns           int
+	MaxIdleConnsPerHost    int
+	MaxConnsPerHost        int
+	IdleConnTimeout        time.Duration
+	TLSHandshakeTimeout    time.Duration
+	ResponseHeaderTimeout  time.Duration
+	ExpectContinueTimeout  time.Duration
+	DialTimeout            time.Duration
+	KeepAlive              time.Duration
+	ForceAttemptHTTP2      bool
+	DisableCompression     bool
+	DisableKeepAlives      bool
+	MaxResponseHeaderBytes int64
+	ReadBufferSize         int
+	WriteBufferSize        int
 }
 
 func (tc TransportConfig) applyOption(c *requestConfig) {
 	c.transport = &tc
+}
+
+// DefaultTransportConfig returns settings equivalent to Go's default HTTP
+// transport, expressed as a reusable TransportConfig.
+func DefaultTransportConfig() TransportConfig {
+	return TransportConfig{
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		DialTimeout:           30 * time.Second,
+		KeepAlive:             30 * time.Second,
+		ForceAttemptHTTP2:     true,
+	}
+}
+
+// PerformanceTransportConfig returns connection-pool settings tuned for
+// long-lived, high-concurrency clients. Adjust the limits for your workload.
+func PerformanceTransportConfig() TransportConfig {
+	return TransportConfig{
+		MaxIdleConns:          1024,
+		MaxIdleConnsPerHost:   256,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		DialTimeout:           30 * time.Second,
+		KeepAlive:             30 * time.Second,
+		ForceAttemptHTTP2:     true,
+	}
+}
+
+// MaxResponseBodySize limits how many response-body bytes are automatically
+// read and cached for non-streaming requests. A value <= 0 means unlimited.
+type MaxResponseBodySize int64
+
+func (m MaxResponseBodySize) applyOption(c *requestConfig) {
+	v := int64(m)
+	c.maxBodyBytes = &v
 }
 
 // HTTPClient uses a custom *http.Client for a single request.
@@ -340,6 +402,12 @@ type Retry struct {
 
 func (r Retry) applyOption(c *requestConfig) {
 	c.retry = &r
+	if len(r.StatusCodes) > retryStatusCodeMapThreshold {
+		c.retryStatusSet = make(map[int]struct{}, len(r.StatusCodes))
+		for _, code := range r.StatusCodes {
+			c.retryStatusSet[code] = struct{}{}
+		}
+	}
 }
 
 // ---- Session ---------------------------------------------------------------
@@ -372,6 +440,10 @@ type Session struct {
 	// Proxies maps scheme to proxy URL.
 	Proxies map[string]string
 
+	// Stream controls whether responses are left open for streaming by default.
+	// Per-request Stream options override this value.
+	Stream bool
+
 	// TransportConfig configures the default HTTP transport.
 	TransportConfig *TransportConfig
 
@@ -392,6 +464,7 @@ type sessionSnapshot struct {
 	auth           AuthProvider
 	timeout        time.Duration
 	allowRedirects bool
+	stream         bool
 	client         *http.Client
 }
 
@@ -409,6 +482,20 @@ func NewSession() *Session {
 	return s
 }
 
+// NewFastSession creates a Session tuned for long-lived, high-concurrency
+// workloads. It applies PerformanceTransportConfig and enables streaming by
+// default so large responses are not automatically buffered in memory. Callers
+// must read or close streamed response bodies; use Stream(false) on a request
+// when Text, Content, or JSON helpers should cache the body. Use NewSession
+// when you prefer the standard convenience behavior that caches response bodies
+// by default.
+func NewFastSession() *Session {
+	s := NewSession()
+	s.Stream = true
+	s.SetTransportConfig(PerformanceTransportConfig())
+	return s
+}
+
 func (s *Session) snapshot() sessionSnapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -419,6 +506,7 @@ func (s *Session) snapshot() sessionSnapshot {
 		auth:           s.Auth,
 		timeout:        s.Timeout,
 		allowRedirects: s.AllowRedirects,
+		stream:         s.Stream,
 		client:         s.client,
 	}
 }
@@ -456,6 +544,15 @@ func (s *Session) SetTimeout(timeout time.Duration) *Session {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Timeout = timeout
+	return s
+}
+
+// SetStream controls whether responses from this session are left open for
+// streaming by default. Per-request Stream options override this value.
+func (s *Session) SetStream(stream bool) *Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Stream = stream
 	return s
 }
 
@@ -593,7 +690,7 @@ func (s *Session) request(method, rawURL string, opts []Option) (*Response, erro
 			return nil, fmt.Errorf("go-requests: request failed: %w", err)
 		}
 
-		resp, err := newResponse(httpResp, cfg.stream)
+		resp, err := newResponse(httpResp, effectiveStream(snapshot, cfg), cfg.maxBodyBytes)
 		if err != nil {
 			return nil, err
 		}
@@ -687,12 +784,19 @@ func (s sessionSnapshot) retryDigestAuth(ctx context.Context, client *http.Clien
 	if err != nil {
 		return nil, fmt.Errorf("go-requests: digest auth retry failed: %w", err)
 	}
-	resp, err := newResponse(httpResp, cfg.stream)
+	resp, err := newResponse(httpResp, effectiveStream(s, cfg), cfg.maxBodyBytes)
 	if err != nil {
 		return nil, err
 	}
 	resp.Elapsed = time.Since(start)
 	return resp, nil
+}
+
+func effectiveStream(snapshot sessionSnapshot, cfg *requestConfig) bool {
+	if cfg.stream != nil {
+		return *cfg.stream
+	}
+	return snapshot.stream
 }
 
 func retryMaxAttempts(retry *Retry) int {
@@ -710,12 +814,7 @@ func shouldRetryResponse(resp *Response, cfg *requestConfig, method string, atte
 	if attempt+1 >= maxAttempts || !retryAllowed(cfg, method) {
 		return false
 	}
-	for _, code := range retryStatusCodes(cfg.retry) {
-		if resp.StatusCode == code {
-			return true
-		}
-	}
-	return false
+	return shouldRetryStatusCode(resp.StatusCode, cfg)
 }
 
 func retryAllowed(cfg *requestConfig, method string) bool {
@@ -737,16 +836,29 @@ func isReplayable(cfg *requestConfig) bool {
 	return cfg.rawBody == nil && len(cfg.files) == 0
 }
 
-func retryStatusCodes(retry *Retry) []int {
-	if retry != nil && len(retry.StatusCodes) > 0 {
-		return retry.StatusCodes
+func shouldRetryStatusCode(statusCode int, cfg *requestConfig) bool {
+	if cfg != nil && cfg.retry != nil && len(cfg.retry.StatusCodes) > 0 {
+		if cfg.retryStatusSet != nil {
+			_, ok := cfg.retryStatusSet[statusCode]
+			return ok
+		}
+		for _, code := range cfg.retry.StatusCodes {
+			if statusCode == code {
+				return true
+			}
+		}
+		return false
 	}
-	return []int{
-		http.StatusTooManyRequests,
+
+	switch statusCode {
+	case http.StatusTooManyRequests,
 		http.StatusInternalServerError,
 		http.StatusBadGateway,
 		http.StatusServiceUnavailable,
-		http.StatusGatewayTimeout,
+		http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -886,6 +998,39 @@ func applyTransportConfig(transport *http.Transport, config *TransportConfig) {
 	}
 	if config.ExpectContinueTimeout > 0 {
 		transport.ExpectContinueTimeout = config.ExpectContinueTimeout
+	}
+	if config.DialTimeout > 0 || config.KeepAlive > 0 {
+		dialTimeout := config.DialTimeout
+		if dialTimeout == 0 {
+			dialTimeout = defaultDialTimeout
+		}
+		keepAlive := config.KeepAlive
+		if keepAlive == 0 {
+			keepAlive = defaultKeepAlive
+		}
+		dialer := &net.Dialer{
+			Timeout:   dialTimeout,
+			KeepAlive: keepAlive,
+		}
+		transport.DialContext = dialer.DialContext
+	}
+	if config.ForceAttemptHTTP2 {
+		transport.ForceAttemptHTTP2 = true
+	}
+	if config.DisableCompression {
+		transport.DisableCompression = true
+	}
+	if config.DisableKeepAlives {
+		transport.DisableKeepAlives = true
+	}
+	if config.MaxResponseHeaderBytes > 0 {
+		transport.MaxResponseHeaderBytes = config.MaxResponseHeaderBytes
+	}
+	if config.ReadBufferSize > 0 {
+		transport.ReadBufferSize = config.ReadBufferSize
+	}
+	if config.WriteBufferSize > 0 {
+		transport.WriteBufferSize = config.WriteBufferSize
 	}
 }
 
