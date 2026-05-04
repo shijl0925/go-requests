@@ -2,6 +2,7 @@ package requests
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -47,7 +48,7 @@ type Response struct {
 // newResponse creates a Response from a *http.Response. By default it reads and
 // closes the response body so it is available for repeated access. In streaming
 // mode, the caller is responsible for reading or closing the body.
-func newResponse(r *http.Response, stream bool) (*Response, error) {
+func newResponse(r *http.Response, stream bool, maxBodyBytes *int64) (*Response, error) {
 	resp := &Response{
 		StatusCode:  r.StatusCode,
 		Status:      r.Status,
@@ -63,13 +64,29 @@ func newResponse(r *http.Response, stream bool) (*Response, error) {
 	}
 
 	defer r.Body.Close()
-	body, err := io.ReadAll(r.Body)
+	body, err := readResponseBody(r.Body, maxBodyBytes)
 	if err != nil {
 		return nil, err
 	}
 	resp.body = body
 	resp.bodyRead = true
 	return resp, nil
+}
+
+func readResponseBody(body io.Reader, maxBodyBytes *int64) ([]byte, error) {
+	if maxBodyBytes == nil || *maxBodyBytes <= 0 {
+		return io.ReadAll(body)
+	}
+
+	limit := *maxBodyBytes
+	data, err := io.ReadAll(io.LimitReader(body, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("go-requests: response body exceeds max size %d", limit)
+	}
+	return data, nil
 }
 
 // Body returns the underlying response body for streaming reads.
