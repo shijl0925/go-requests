@@ -79,8 +79,8 @@ func readResponseBody(body io.Reader, maxBodyBytes *int64) ([]byte, error) {
 	}
 
 	limit := *maxBodyBytes
-	// Read one byte beyond the limit so we can detect oversized bodies without
-	// buffering the full response.
+	// Read one byte beyond the limit so oversized responses fail as soon as the
+	// limit is crossed, without buffering an extremely large response in memory.
 	data, err := io.ReadAll(io.LimitReader(body, limit+1))
 	if err != nil {
 		return nil, err

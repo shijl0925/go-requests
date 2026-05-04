@@ -39,13 +39,15 @@ type requestConfig struct {
 	verify         *bool
 	proxies        map[string]string
 	context        context.Context
-	stream         *bool
-	contentType    string
-	retry          *Retry
-	transport      *TransportConfig
-	client         *http.Client
-	roundTripper   http.RoundTripper
-	maxBodyBytes   *int64
+	// stream is a pointer so Stream(false) can override a session default of
+	// streaming=true; nil means use the session default.
+	stream       *bool
+	contentType  string
+	retry        *Retry
+	transport    *TransportConfig
+	client       *http.Client
+	roundTripper http.RoundTripper
+	maxBodyBytes *int64
 }
 
 // FileField represents a file to be uploaded in a multipart request.
