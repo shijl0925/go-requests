@@ -338,7 +338,8 @@ resp, err := requests.Get("https://httpbin.org/get",
 
 ### Session
 
-A `Session` maintains persistent headers and cookies across requests, and lets you set defaults once. Reusing a session is recommended for high-throughput applications because it preserves the underlying connection pool.
+A `Session` maintains persistent headers and cookies across requests, and lets you set defaults once.
+Reusing a session is recommended for high-throughput applications because it preserves the underlying connection pool.
 
 ```go
 s := requests.NewSession()

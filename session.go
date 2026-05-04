@@ -24,6 +24,11 @@ type Option interface {
 }
 
 // requestConfig holds the accumulated options for a single request.
+const (
+	defaultDialTimeout = 30 * time.Second
+	defaultKeepAlive   = 30 * time.Second
+)
+
 type requestConfig struct {
 	params         url.Values
 	headers        http.Header
@@ -979,11 +984,11 @@ func applyTransportConfig(transport *http.Transport, config *TransportConfig) {
 	if config.DialTimeout > 0 || config.KeepAlive > 0 {
 		dialTimeout := config.DialTimeout
 		if dialTimeout == 0 {
-			dialTimeout = 30 * time.Second
+			dialTimeout = defaultDialTimeout
 		}
 		keepAlive := config.KeepAlive
 		if keepAlive == 0 {
-			keepAlive = 30 * time.Second
+			keepAlive = defaultKeepAlive
 		}
 		dialer := &net.Dialer{
 			Timeout:   dialTimeout,
