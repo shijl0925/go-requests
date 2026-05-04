@@ -79,14 +79,20 @@ func readResponseBody(body io.Reader, maxBodyBytes *int64) ([]byte, error) {
 	}
 
 	limit := *maxBodyBytes
-	// Read one byte beyond the limit so oversized responses fail as soon as the
-	// limit is crossed, without buffering an extremely large response in memory.
-	data, err := io.ReadAll(io.LimitReader(body, limit+1))
+	limited := &io.LimitedReader{R: body, N: limit}
+	data, err := io.ReadAll(limited)
 	if err != nil {
 		return nil, err
 	}
-	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("go-requests: response body exceeds max size %d", limit)
+	if limited.N == 0 {
+		var extra [1]byte
+		n, err := body.Read(extra[:])
+		if err != nil && err != io.EOF {
+			return nil, err
+		}
+		if n > 0 {
+			return nil, fmt.Errorf("go-requests: response body exceeds max size %d", limit)
+		}
 	}
 	return data, nil
 }

@@ -795,12 +795,7 @@ func shouldRetryResponse(resp *Response, cfg *requestConfig, method string, atte
 	if attempt+1 >= maxAttempts || !retryAllowed(cfg, method) {
 		return false
 	}
-	for _, code := range retryStatusCodes(cfg.retry) {
-		if resp.StatusCode == code {
-			return true
-		}
-	}
-	return false
+	return shouldRetryStatusCode(resp.StatusCode, cfg.retry)
 }
 
 func retryAllowed(cfg *requestConfig, method string) bool {
@@ -822,21 +817,26 @@ func isReplayable(cfg *requestConfig) bool {
 	return cfg.rawBody == nil && len(cfg.files) == 0
 }
 
-// defaultRetryStatusCodes is the shared fallback used by retryStatusCodes when
-// callers do not provide a custom Retry.StatusCodes list.
-var defaultRetryStatusCodes = []int{
-	http.StatusTooManyRequests,
-	http.StatusInternalServerError,
-	http.StatusBadGateway,
-	http.StatusServiceUnavailable,
-	http.StatusGatewayTimeout,
-}
-
-func retryStatusCodes(retry *Retry) []int {
+func shouldRetryStatusCode(statusCode int, retry *Retry) bool {
 	if retry != nil && len(retry.StatusCodes) > 0 {
-		return retry.StatusCodes
+		for _, code := range retry.StatusCodes {
+			if statusCode == code {
+				return true
+			}
+		}
+		return false
 	}
-	return defaultRetryStatusCodes
+
+	switch statusCode {
+	case http.StatusTooManyRequests,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
 }
 
 func waitBeforeRetry(ctx context.Context, retry *Retry, attempt int) error {

@@ -308,8 +308,8 @@ func TestRetryHelpers(t *testing.T) {
 	if retryAllowed(fileCfg, http.MethodPost) {
 		t.Fatal("file uploads should not be retryable")
 	}
-	if got := retryStatusCodes(&Retry{StatusCodes: []int{418}}); len(got) != 1 || got[0] != 418 {
-		t.Fatalf("unexpected status codes: %#v", got)
+	if !shouldRetryStatusCode(418, &Retry{StatusCodes: []int{418}}) || shouldRetryStatusCode(http.StatusTooManyRequests, &Retry{StatusCodes: []int{418}}) {
+		t.Fatal("custom retry status code filter failed")
 	}
 	if retryDelay(nil, 0) != 0 || retryDelay(&Retry{Wait: 0}, 0) != 0 {
 		t.Fatal("expected zero retry delay")
