@@ -49,6 +49,8 @@ func main() {
 - TLS verification control (`Verify`)
 - Proxy support (`Proxies`)
 - Transport and connection-pool configuration (`TransportConfig`)
+- High-performance sessions (`NewFastSession`, `PerformanceTransportConfig`)
+- Response auto-read limit (`MaxResponseBodySize`)
 - Custom HTTP clients and transports (`HTTPClient`, `RoundTripper`)
 - Context support (`WithContext`)
 - Common header shortcuts (`Header`, `UserAgent`, `Referer`, `Accept`, `ContentType`)
@@ -260,6 +262,29 @@ s.SetTransportConfig(requests.TransportConfig{
 })
 ```
 
+For high-concurrency workloads, reuse a long-lived session with the performance
+transport defaults:
+
+```go
+s := requests.NewFastSession()
+resp, err := s.Get("https://api.example.com/resource")
+if err != nil {
+    panic(err)
+}
+defer resp.Close()
+
+_, err = io.Copy(io.Discard, resp.Body())
+```
+
+`NewFastSession` uses `PerformanceTransportConfig` and streams responses by
+default to avoid reading large response bodies into memory. Override streaming
+for a single request when you want the response cached for helpers such as
+`Text`, `Content`, and `JSON`:
+
+```go
+resp, err := s.Get("https://api.example.com/resource", requests.Stream(false))
+```
+
 You can also apply transport settings to a single request:
 
 ```go
@@ -267,6 +292,21 @@ resp, err := requests.Get("https://api.example.com/resource",
     requests.TransportConfig{MaxIdleConns: 100, IdleConnTimeout: 90 * time.Second},
 )
 ```
+
+### Response Body Limits
+
+By default, non-streaming responses are read and cached in memory for convenient
+repeated access. Use `Stream(true)` for large downloads, or cap automatic reads
+with `MaxResponseBodySize`:
+
+```go
+resp, err := requests.Get("https://api.example.com/resource",
+    requests.MaxResponseBodySize(1<<20), // 1 MiB
+)
+```
+
+If the response exceeds the limit, the request returns an error instead of
+continuing to allocate memory for the full body.
 
 ### Custom Client or RoundTripper
 
@@ -298,7 +338,7 @@ resp, err := requests.Get("https://httpbin.org/get",
 
 ### Session
 
-A `Session` maintains persistent headers and cookies across requests, and lets you set defaults once.
+A `Session` maintains persistent headers and cookies across requests, and lets you set defaults once. Reusing a session is recommended for high-throughput applications because it preserves the underlying connection pool.
 
 ```go
 s := requests.NewSession()
@@ -355,6 +395,19 @@ Run the local unit tests:
 
 ```bash
 go test ./...
+```
+
+Run local benchmarks and include allocation statistics:
+
+```bash
+go test -bench=. -benchmem ./...
+```
+
+Capture CPU or memory profiles for pprof-driven optimization:
+
+```bash
+go test -bench=. -benchmem -cpuprofile=/tmp/go-requests.cpu ./...
+go test -bench=. -benchmem -memprofile=/tmp/go-requests.mem ./...
 ```
 
 Run the integration tests against `https://httpbin.org`:
