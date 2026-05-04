@@ -87,7 +87,8 @@ func readResponseBody(body io.Reader, maxBodyBytes *int64) ([]byte, error) {
 	if limited.N == 0 {
 		// The limit was exactly reached; read one more byte to distinguish an
 		// exact-size response from an oversized one. For example, when limit=6,
-		// a 6-byte body is allowed but a 7-byte body must fail here.
+		// an immediate EOF means a 6-byte body is allowed, while successfully
+		// reading another byte means a 7+ byte body must fail.
 		var extra [1]byte
 		n, err := body.Read(extra[:])
 		if err != nil && err != io.EOF {

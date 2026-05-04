@@ -25,8 +25,9 @@ type Option interface {
 
 // requestConfig holds the accumulated options for a single request.
 const (
-	defaultDialTimeout = 30 * time.Second
-	defaultKeepAlive   = 30 * time.Second
+	defaultDialTimeout          = 30 * time.Second
+	defaultKeepAlive            = 30 * time.Second
+	retryStatusCodeMapThreshold = 8
 )
 
 type requestConfig struct {
@@ -397,7 +398,7 @@ type Retry struct {
 
 func (r Retry) applyOption(c *requestConfig) {
 	c.retry = &r
-	if len(r.StatusCodes) > 8 {
+	if len(r.StatusCodes) > retryStatusCodeMapThreshold {
 		c.retryStatusSet = make(map[int]struct{}, len(r.StatusCodes))
 		for _, code := range r.StatusCodes {
 			c.retryStatusSet[code] = struct{}{}
