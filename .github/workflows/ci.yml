@@ -49,3 +49,28 @@ jobs:
         run: go test -tags=integration ./... -count=1 -timeout 120s
         env:
           HTTPBIN_BASE_URL: http://127.0.0.1:8080
+
+  benchmark:
+    name: NewSession vs NewFastSession benchmarks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+          cache: true
+
+      - name: Run session comparison benchmarks
+        run: |
+          go test -run '^$' -bench 'Benchmark(NewSessionGet|NewFastSessionGet)$' -benchmem -count=5 ./... | tee /tmp/session-benchmarks.txt
+          {
+            echo "## NewSession vs NewFastSession benchmarks"
+            echo
+            echo '```text'
+            cat /tmp/session-benchmarks.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

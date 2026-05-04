@@ -61,7 +61,7 @@ func BenchmarkRequestsGetDefault(b *testing.B) {
 	}
 }
 
-func BenchmarkSessionGet(b *testing.B) {
+func BenchmarkNewSessionGet(b *testing.B) {
 	srv := benchmarkServer()
 	defer srv.Close()
 	s := requests.NewSession()
@@ -77,7 +77,7 @@ func BenchmarkSessionGet(b *testing.B) {
 	}
 }
 
-func BenchmarkFastSessionStreamGet(b *testing.B) {
+func BenchmarkNewFastSessionGet(b *testing.B) {
 	srv := benchmarkServer()
 	defer srv.Close()
 	s := requests.NewFastSession()

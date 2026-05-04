@@ -404,6 +404,15 @@ Run local benchmarks and include allocation statistics:
 go test -bench=. -benchmem ./...
 ```
 
+Compare the standard session with the high-performance session:
+
+```bash
+go test -run '^$' -bench 'Benchmark(NewSessionGet|NewFastSessionGet)$' -benchmem -count=5 ./...
+```
+
+The CI workflow also runs this comparison and writes the results to the GitHub
+Actions job summary.
+
 Capture CPU or memory profiles for pprof-driven optimization:
 
 ```bash
