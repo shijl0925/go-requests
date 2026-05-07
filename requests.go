@@ -11,7 +11,7 @@ import (
 // concurrent goroutines.
 // Access and replacement are safe for concurrent callers.
 // Use Session setter methods for concurrent-safe mutations of the returned
-// default session.
+// default session; direct field mutations are not concurrency-safe.
 var (
 	defaultSessionMu sync.RWMutex
 	defaultSession   = NewSession()

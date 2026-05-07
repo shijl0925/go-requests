@@ -86,6 +86,53 @@ func TestNilOptionIsIgnored(t *testing.T) {
 	}
 }
 
+func TestDigestAuthRejectsNonReplayableBody(t *testing.T) {
+	calls := 0
+	s := requests.NewSession().SetRoundTripper(roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		header := make(http.Header)
+		header.Set("WWW-Authenticate", `Digest realm="test", nonce="nonce"`)
+		return &http.Response{
+			StatusCode: http.StatusUnauthorized,
+			Status:     "401 Unauthorized",
+			Header:     header,
+			Body:       io.NopCloser(strings.NewReader("unauthorized")),
+			Request:    req,
+		}, nil
+	}))
+
+	_, err := s.Post("http://example.test",
+		requests.Body{Reader: strings.NewReader("body")},
+		requests.Auth{Provider: requests.DigestAuth{Username: "u", Password: "p"}},
+	)
+	if err == nil || !strings.Contains(err.Error(), "digest auth requires replayable request body") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("expected one request, got %d", calls)
+	}
+}
+
+func TestMultipartNilFileContentReturnsError(t *testing.T) {
+	s := requests.NewSession().SetRoundTripper(roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if _, err := io.ReadAll(req.Body); err != nil {
+			return nil, err
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("ok")),
+			Request:    req,
+		}, nil
+	}))
+
+	_, err := s.Post("http://example.test", requests.Files{"file": {}})
+	if err == nil || !strings.Contains(err.Error(), "nil content") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestDefaultSessionResetClearsSharedCookies(t *testing.T) {
 	requests.ResetDefaultSession()
 	defer requests.ResetDefaultSession()
