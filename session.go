@@ -730,7 +730,7 @@ func (s sessionSnapshot) retryDigestAuth(ctx context.Context, client *http.Clien
 		retryReq.Header[k] = vals
 	}
 	if err := applyDigestAuth(retryReq, da, wwwAuth); err != nil {
-		return nil, fmt.Errorf("go-requests: digest auth retry: %w", err)
+		return nil, fmt.Errorf("go-requests: failed to apply digest auth for retry: %w", err)
 	}
 	httpResp, err := client.Do(retryReq)
 	if err != nil {
@@ -1064,7 +1064,7 @@ func writeMultipart(w *multipart.Writer, cfg *requestConfig) error {
 		var fw io.Writer
 		var err error
 		if ff.Content == nil {
-			return fmt.Errorf("go-requests: multipart file %q has nil content", fieldName)
+			return fmt.Errorf("go-requests: multipart file field %q has nil content", fieldName)
 		}
 		if ff.ContentType != "" {
 			h := make(map[string][]string)
