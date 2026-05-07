@@ -11,7 +11,9 @@ func TestApplyDigestAuthWithQOPAuth(t *testing.T) {
 		t.Fatalf("failed to create request: %v", err)
 	}
 
-	applyDigestAuth(req, DigestAuth{Username: "user", Password: "pass"}, `Digest realm="test", nonce="nonce-value", qop="auth", opaque="opaque-value", algorithm=MD5`)
+	if err := applyDigestAuth(req, DigestAuth{Username: "user", Password: "pass"}, `Digest realm="test", nonce="nonce-value", qop="auth", opaque="opaque-value", algorithm=MD5`); err != nil {
+		t.Fatalf("applyDigestAuth failed: %v", err)
+	}
 
 	header := req.Header.Get("Authorization")
 	if header == "" {

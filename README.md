@@ -175,6 +175,10 @@ resp, err := requests.Get("https://httpbin.org/digest-auth/auth/user/pass",
 )
 ```
 
+Digest authentication currently supports MD5 with `qop=auth`. Servers that
+require other algorithms (for example SHA-256 or MD5-sess) or `qop=auth-int`
+return an explicit unsupported digest auth error.
+
 ### Cookies
 
 ```go
@@ -182,6 +186,11 @@ resp, err := requests.Get("https://httpbin.org/cookies",
     requests.Cookies{"session": "abc123"},
 )
 ```
+
+Package-level convenience functions such as `requests.Get` and `requests.Post`
+share a default session, including its cookie jar. Use `requests.NewSession()`
+for isolated state, `requests.DefaultSession()` to inspect or configure the
+shared session, or `requests.ResetDefaultSession()` to clear it.
 
 ### Timeout
 
@@ -253,6 +262,8 @@ resp, err := requests.Get("https://httpbin.org/get",
 
 ```go
 s := requests.NewSession()
+s.SetVerify(true)
+s.SetProxies(map[string]string{"https": "http://proxy.example.com:8080"})
 s.SetTransportConfig(requests.TransportConfig{
     MaxIdleConns:        100,
     MaxIdleConnsPerHost: 10,

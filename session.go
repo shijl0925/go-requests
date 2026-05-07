@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -367,17 +368,21 @@ type Session struct {
 	AllowRedirects bool
 
 	// Verify controls TLS certificate verification. Defaults to true.
+	// Prefer SetVerify so the session client is rebuilt immediately.
 	Verify bool
 
 	// Proxies maps scheme to proxy URL.
+	// Prefer SetProxies so the session client is rebuilt immediately.
 	Proxies map[string]string
 
 	// TransportConfig configures the default HTTP transport.
+	// Prefer SetTransportConfig so the session client is rebuilt immediately.
 	TransportConfig *TransportConfig
 
 	// RoundTripper is the default transport used by this session. When set to a
 	// non-*http.Transport value, Verify, Proxies, and TransportConfig are not
 	// applied to it.
+	// Prefer SetRoundTripper so the session client is rebuilt immediately.
 	RoundTripper http.RoundTripper
 
 	// client is the underlying HTTP client.
@@ -393,6 +398,11 @@ type sessionSnapshot struct {
 	timeout        time.Duration
 	allowRedirects bool
 	client         *http.Client
+	customClient   bool
+	verify         bool
+	proxies        map[string]string
+	transport      *TransportConfig
+	roundTripper   http.RoundTripper
 }
 
 // NewSession creates a new Session with sensible defaults.
@@ -420,6 +430,11 @@ func (s *Session) snapshot() sessionSnapshot {
 		timeout:        s.Timeout,
 		allowRedirects: s.AllowRedirects,
 		client:         s.client,
+		customClient:   s.customClient,
+		verify:         s.Verify,
+		proxies:        cloneStringMap(s.Proxies),
+		transport:      cloneTransportConfig(s.TransportConfig),
+		roundTripper:   s.RoundTripper,
 	}
 }
 
@@ -456,6 +471,28 @@ func (s *Session) SetTimeout(timeout time.Duration) *Session {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Timeout = timeout
+	return s
+}
+
+// SetVerify controls TLS certificate verification for this session.
+func (s *Session) SetVerify(verify bool) *Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Verify = verify
+	if !s.customClient {
+		s.client = s.buildClientLocked()
+	}
+	return s
+}
+
+// SetProxies configures proxy URLs keyed by scheme for this session.
+func (s *Session) SetProxies(proxies map[string]string) *Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Proxies = cloneStringMap(proxies)
+	if !s.customClient {
+		s.client = s.buildClientLocked()
+	}
 	return s
 }
 
@@ -532,6 +569,9 @@ func (s *Session) buildTransportLocked() http.RoundTripper {
 func (s *Session) request(method, rawURL string, opts []Option) (*Response, error) {
 	cfg := &requestConfig{}
 	for _, o := range opts {
+		if o == nil {
+			continue
+		}
 		o.applyOption(cfg)
 	}
 
@@ -606,6 +646,9 @@ func (s *Session) request(method, rawURL string, opts []Option) (*Response, erro
 				if strings.HasPrefix(wwwAuth, "Digest ") {
 					if err := resp.Close(); err != nil {
 						return nil, fmt.Errorf("go-requests: close digest challenge response: %w", err)
+					}
+					if !isReplayable(cfg) {
+						return nil, fmt.Errorf("go-requests: digest auth requires replayable request body")
 					}
 					resp, err = snapshot.retryDigestAuth(ctx, client, req, method, parsedURL.String(), cfg, da, wwwAuth, start)
 					if err != nil {
@@ -682,7 +725,9 @@ func (s sessionSnapshot) retryDigestAuth(ctx context.Context, client *http.Clien
 	for k, vals := range req.Header {
 		retryReq.Header[k] = vals
 	}
-	applyDigestAuth(retryReq, da, wwwAuth)
+	if err := applyDigestAuth(retryReq, da, wwwAuth); err != nil {
+		return nil, err
+	}
 	httpResp, err := client.Do(retryReq)
 	if err != nil {
 		return nil, fmt.Errorf("go-requests: digest auth retry failed: %w", err)
@@ -797,19 +842,34 @@ func (s sessionSnapshot) buildEffectiveClient(cfg *requestConfig) *http.Client {
 
 	if cfg.roundTripper != nil {
 		client.Transport = cfg.roundTripper
-	} else if cfg.verify != nil || cfg.proxies != nil || cfg.transport != nil {
-		t, ok := cloneHTTPTransport(client.Transport)
-		if ok {
-			if cfg.verify != nil {
-				setInsecureSkipVerify(t, !*cfg.verify)
+	} else {
+		if !s.customClient && (s.roundTripper != nil || !s.verify || len(s.proxies) > 0 || s.transport != nil) {
+			t, ok := cloneHTTPTransport(s.roundTripper)
+			if ok {
+				if !s.verify {
+					setInsecureSkipVerify(t, true)
+				}
+				applyProxies(t, s.proxies)
+				applyTransportConfig(t, s.transport)
+				client.Transport = t
+			} else {
+				client.Transport = s.roundTripper
 			}
-			if cfg.proxies != nil {
-				applyProxies(t, cfg.proxies)
+		}
+		if cfg.verify != nil || cfg.proxies != nil || cfg.transport != nil {
+			t, ok := cloneHTTPTransport(client.Transport)
+			if ok {
+				if cfg.verify != nil {
+					setInsecureSkipVerify(t, !*cfg.verify)
+				}
+				if cfg.proxies != nil {
+					applyProxies(t, cfg.proxies)
+				}
+				if cfg.transport != nil {
+					applyTransportConfig(t, cfg.transport)
+				}
+				client.Transport = t
 			}
-			if cfg.transport != nil {
-				applyTransportConfig(t, cfg.transport)
-			}
-			client.Transport = t
 		}
 	}
 	if client.Transport == nil {
@@ -826,6 +886,25 @@ func cloneHTTPClient(client *http.Client) *http.Client {
 	}
 	c := *client
 	return &c
+}
+
+func cloneStringMap(m map[string]string) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	clone := make(map[string]string, len(m))
+	for k, v := range m {
+		clone[k] = v
+	}
+	return clone
+}
+
+func cloneTransportConfig(config *TransportConfig) *TransportConfig {
+	if config == nil {
+		return nil
+	}
+	clone := *config
+	return &clone
 }
 
 func cloneHTTPTransport(roundTripper http.RoundTripper) (*http.Transport, bool) {
@@ -980,11 +1059,15 @@ func writeMultipart(w *multipart.Writer, cfg *requestConfig) error {
 		}
 		var fw io.Writer
 		var err error
+		if ff.Content == nil {
+			return fmt.Errorf("go-requests: multipart file %q has nil content", fieldName)
+		}
 		if ff.ContentType != "" {
 			h := make(map[string][]string)
-			h["Content-Disposition"] = []string{
-				fmt.Sprintf(`form-data; name="%s"; filename="%s"`, fieldName, filepath.Base(filename)),
-			}
+			h["Content-Disposition"] = []string{mime.FormatMediaType("form-data", map[string]string{
+				"name":     fieldName,
+				"filename": filepath.Base(filename),
+			})}
 			h["Content-Type"] = []string{ff.ContentType}
 			fw, err = w.CreatePart(h)
 		} else {

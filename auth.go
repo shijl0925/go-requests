@@ -38,7 +38,8 @@ func (a TokenAuth) Apply(req *http.Request) {
 	req.Header.Set("Authorization", "Bearer "+a.Token)
 }
 
-// DigestAuth implements HTTP Digest Authentication (RFC 2617).
+// DigestAuth implements HTTP Digest Authentication (RFC 2617) for MD5 with
+// qop=auth.
 type DigestAuth struct {
 	Username string
 	Password string
@@ -57,7 +58,7 @@ func (a DigestAuth) Apply(_ *http.Request) {}
 // its challenge-response protocol. The MD5 usage here is dictated by the
 // protocol specification and is not used for cryptographic password storage;
 // the nonce provided by the server ensures replay protection.
-func applyDigestAuth(req *http.Request, a DigestAuth, wwwAuthenticate string) {
+func applyDigestAuth(req *http.Request, a DigestAuth, wwwAuthenticate string) error {
 	params := parseDigestChallenge(wwwAuthenticate)
 	realm := params["realm"]
 	nonce := params["nonce"]
@@ -65,13 +66,19 @@ func applyDigestAuth(req *http.Request, a DigestAuth, wwwAuthenticate string) {
 	if algorithm == "" {
 		algorithm = "MD5"
 	}
+	if !strings.EqualFold(algorithm, "MD5") {
+		return fmt.Errorf("go-requests: unsupported digest auth algorithm %q", algorithm)
+	}
+	qop := selectDigestQOP(params["qop"])
+	if params["qop"] != "" && qop == "" {
+		return fmt.Errorf("go-requests: unsupported digest auth qop %q", params["qop"])
+	}
 
 	uri := req.URL.RequestURI()
 
 	ha1 := md5sum(a.Username + ":" + realm + ":" + a.Password) //nolint:gosec
 	ha2 := md5sum(req.Method + ":" + uri)                      //nolint:gosec
 	response := md5sum(ha1 + ":" + nonce + ":" + ha2)          //nolint:gosec
-	qop := selectDigestQOP(params["qop"])
 	nonceCount := "00000001"
 	cnonce := newDigestCNonce()
 	if qop == "auth" {
@@ -89,6 +96,7 @@ func applyDigestAuth(req *http.Request, a DigestAuth, wwwAuthenticate string) {
 		header += fmt.Sprintf(`, qop=%s, nc=%s, cnonce="%s"`, qop, nonceCount, cnonce)
 	}
 	req.Header.Set("Authorization", header)
+	return nil
 }
 
 func md5sum(s string) string {

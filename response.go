@@ -2,6 +2,7 @@ package requests
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -213,5 +214,21 @@ type HTTPError struct {
 }
 
 func (e *HTTPError) Error() string {
-	return e.Response.Status + ": " + e.Response.URL.String()
+	if e == nil {
+		return "go-requests: HTTP error"
+	}
+	if e.Response == nil {
+		return "go-requests: HTTP error: response is nil"
+	}
+	status := e.Response.Status
+	if status == "" && e.Response.StatusCode != 0 {
+		status = fmt.Sprintf("%d", e.Response.StatusCode)
+	}
+	if status == "" {
+		status = "unknown status"
+	}
+	if e.Response.URL == nil {
+		return "go-requests: HTTP error: " + status
+	}
+	return status + ": " + e.Response.URL.String()
 }
