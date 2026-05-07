@@ -369,24 +369,24 @@ type Session struct {
 
 	// Verify controls TLS certificate verification. Defaults to true.
 	// Direct changes affect future requests; SetVerify also rebuilds the
-	// cached session client immediately.
+	// session's HTTP client immediately.
 	Verify bool
 
 	// Proxies maps scheme to proxy URL.
 	// Direct changes affect future requests; SetProxies also rebuilds the
-	// cached session client immediately.
+	// session's HTTP client immediately.
 	Proxies map[string]string
 
 	// TransportConfig configures the default HTTP transport.
 	// Direct changes affect future requests; SetTransportConfig also rebuilds
-	// the cached session client immediately.
+	// the session's HTTP client immediately.
 	TransportConfig *TransportConfig
 
 	// RoundTripper is the default transport used by this session. When set to a
 	// non-*http.Transport value, Verify, Proxies, and TransportConfig are not
 	// applied to it.
 	// Direct changes affect future requests; SetRoundTripper also rebuilds the
-	// cached session client immediately.
+	// session's HTTP client immediately.
 	RoundTripper http.RoundTripper
 
 	// client is the underlying HTTP client.

@@ -76,7 +76,7 @@ func TestNilOptionIsIgnored(t *testing.T) {
 	srv, baseURL := newTestServer(echoHandler())
 	defer srv.Close()
 
-	var opt requests.Option
+	var opt requests.Option = nil
 	resp, err := requests.Get(baseURL, opt)
 	if err != nil {
 		t.Fatalf("Get with nil option failed: %v", err)
