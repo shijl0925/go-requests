@@ -196,6 +196,31 @@ func TestSessionTransportSettersAndSnapshot(t *testing.T) {
 	}
 }
 
+func TestCloneHelpers(t *testing.T) {
+	if got := cloneStringMap(nil); got != nil {
+		t.Fatalf("expected nil map clone, got %#v", got)
+	}
+	if got := cloneStringMap(map[string]string{}); got != nil {
+		t.Fatalf("expected empty map clone to be nil, got %#v", got)
+	}
+	originalMap := map[string]string{"https": "http://proxy.test:8080"}
+	clonedMap := cloneStringMap(originalMap)
+	originalMap["https"] = "http://changed.test:8080"
+	if clonedMap["https"] != "http://proxy.test:8080" {
+		t.Fatalf("clone should not share map storage: %#v", clonedMap)
+	}
+
+	if got := cloneTransportConfig(nil); got != nil {
+		t.Fatalf("expected nil transport config clone, got %#v", got)
+	}
+	originalConfig := &TransportConfig{ResponseHeaderTimeout: time.Second}
+	clonedConfig := cloneTransportConfig(originalConfig)
+	originalConfig.ResponseHeaderTimeout = 2 * time.Second
+	if clonedConfig == originalConfig || clonedConfig.ResponseHeaderTimeout != time.Second {
+		t.Fatalf("unexpected cloned config: %#v", clonedConfig)
+	}
+}
+
 func TestNewHTTPRequestErrorsAndHeaderPrecedence(t *testing.T) {
 	snap := sessionSnapshot{headers: http.Header{"Content-Type": {"from-session"}, "X-Session": {"yes"}}}
 	cfg := &requestConfig{
