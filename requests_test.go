@@ -72,6 +72,105 @@ func TestGetRequest(t *testing.T) {
 	}
 }
 
+func TestNilOptionIsIgnored(t *testing.T) {
+	srv, baseURL := newTestServer(echoHandler())
+	defer srv.Close()
+
+	var opt requests.Option = nil
+	resp, err := requests.Get(baseURL, opt)
+	if err != nil {
+		t.Fatalf("Get with nil option failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestDigestAuthRejectsNonReplayableBody(t *testing.T) {
+	calls := 0
+	s := requests.NewSession().SetRoundTripper(roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		header := make(http.Header)
+		header.Set("WWW-Authenticate", `Digest realm="test", nonce="nonce"`)
+		return &http.Response{
+			StatusCode: http.StatusUnauthorized,
+			Status:     "401 Unauthorized",
+			Header:     header,
+			Body:       io.NopCloser(strings.NewReader("unauthorized")),
+			Request:    req,
+		}, nil
+	}))
+
+	_, err := s.Post("http://example.test",
+		requests.Body{Reader: strings.NewReader("body")},
+		requests.Auth{Provider: requests.DigestAuth{Username: "u", Password: "p"}},
+	)
+	if err == nil || !strings.Contains(err.Error(), "digest auth requires replayable request body") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("expected one request, got %d", calls)
+	}
+}
+
+func TestMultipartNilFileContentReturnsError(t *testing.T) {
+	s := requests.NewSession().SetRoundTripper(roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if _, err := io.ReadAll(req.Body); err != nil {
+			return nil, err
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("ok")),
+			Request:    req,
+		}, nil
+	}))
+
+	_, err := s.Post("http://example.test", requests.Files{"file": {}})
+	if err == nil || !strings.Contains(err.Error(), "nil content") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDefaultSessionResetClearsSharedCookies(t *testing.T) {
+	requests.ResetDefaultSession()
+	defer requests.ResetDefaultSession()
+
+	srv, baseURL := newTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/set" {
+			http.SetCookie(w, &http.Cookie{Name: "shared", Value: "yes"})
+			return
+		}
+		if ck, err := r.Cookie("shared"); err == nil {
+			fmt.Fprint(w, ck.Value)
+			return
+		}
+		fmt.Fprint(w, "none")
+	}))
+	defer srv.Close()
+
+	if _, err := requests.Get(baseURL + "/set"); err != nil {
+		t.Fatalf("set cookie request failed: %v", err)
+	}
+	resp, err := requests.Get(baseURL + "/echo")
+	if err != nil {
+		t.Fatalf("echo cookie request failed: %v", err)
+	}
+	if resp.Text() != "yes" {
+		t.Fatalf("expected shared cookie, got %q", resp.Text())
+	}
+
+	requests.ResetDefaultSession()
+	resp, err = requests.Get(baseURL + "/echo")
+	if err != nil {
+		t.Fatalf("echo after reset failed: %v", err)
+	}
+	if resp.Text() != "none" {
+		t.Fatalf("expected reset to clear cookie, got %q", resp.Text())
+	}
+}
+
 func TestGetWithParams(t *testing.T) {
 	srv, baseURL := newTestServer(echoHandler())
 	defer srv.Close()
@@ -1278,6 +1377,16 @@ func TestCustomHTTPClientAndRoundTripper(t *testing.T) {
 	}
 	if calls != 3 || resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("unexpected session client result: calls=%d status=%d", calls, resp.StatusCode)
+	}
+}
+
+func TestHTTPErrorManualResponseIsRobust(t *testing.T) {
+	err := (&requests.HTTPError{Response: &requests.Response{Status: "500 Internal Server Error"}}).Error()
+	if !strings.Contains(err, "500 Internal Server Error") {
+		t.Fatalf("unexpected error string: %q", err)
+	}
+	if got := (&requests.HTTPError{}).Error(); !strings.Contains(got, "response is nil") {
+		t.Fatalf("unexpected nil response error string: %q", got)
 	}
 }
 

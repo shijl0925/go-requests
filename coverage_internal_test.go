@@ -1,6 +1,7 @@
 package requests
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -165,6 +166,61 @@ func TestBuildEffectiveClientOverrides(t *testing.T) {
 	}
 }
 
+func TestSessionTransportSettersAndSnapshot(t *testing.T) {
+	s := NewSession().
+		SetVerify(false).
+		SetProxies(map[string]string{"https": "http://proxy.test:8080"}).
+		SetTransportConfig(TransportConfig{ResponseHeaderTimeout: time.Second})
+
+	snap := s.snapshot()
+	client := snap.buildEffectiveClient(&requestConfig{})
+	tr, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("expected transport, got %T", client.Transport)
+	}
+	if tr.TLSClientConfig == nil || !tr.TLSClientConfig.InsecureSkipVerify {
+		t.Fatal("expected SetVerify(false) to affect effective transport")
+	}
+	if tr.ResponseHeaderTimeout != time.Second {
+		t.Fatalf("expected transport config timeout, got %s", tr.ResponseHeaderTimeout)
+	}
+	proxy, err := tr.Proxy(&http.Request{URL: &url.URL{Scheme: "https"}})
+	if err != nil || proxy.String() != "http://proxy.test:8080" {
+		t.Fatalf("unexpected proxy: %v %v", proxy, err)
+	}
+
+	s.Proxies["https"] = "http://changed.test:8080"
+	proxy, err = tr.Proxy(&http.Request{URL: &url.URL{Scheme: "https"}})
+	if err != nil || proxy.String() != "http://proxy.test:8080" {
+		t.Fatalf("snapshot should isolate proxy map, got %v %v", proxy, err)
+	}
+}
+
+func TestCloneHelpers(t *testing.T) {
+	if got := cloneStringMap(nil); got != nil {
+		t.Fatalf("expected nil map clone, got %#v", got)
+	}
+	if got := cloneStringMap(map[string]string{}); got != nil {
+		t.Fatalf("expected empty map clone to be nil, got %#v", got)
+	}
+	originalMap := map[string]string{"https": "http://proxy.test:8080"}
+	clonedMap := cloneStringMap(originalMap)
+	originalMap["https"] = "http://changed.test:8080"
+	if clonedMap["https"] != "http://proxy.test:8080" {
+		t.Fatalf("clone should not share map storage: %#v", clonedMap)
+	}
+
+	if got := cloneTransportConfig(nil); got != nil {
+		t.Fatalf("expected nil transport config clone, got %#v", got)
+	}
+	originalConfig := &TransportConfig{ResponseHeaderTimeout: time.Second}
+	clonedConfig := cloneTransportConfig(originalConfig)
+	originalConfig.ResponseHeaderTimeout = 2 * time.Second
+	if clonedConfig == originalConfig || clonedConfig.ResponseHeaderTimeout != time.Second {
+		t.Fatalf("unexpected cloned config: %#v", clonedConfig)
+	}
+}
+
 func TestNewHTTPRequestErrorsAndHeaderPrecedence(t *testing.T) {
 	snap := sessionSnapshot{headers: http.Header{"Content-Type": {"from-session"}, "X-Session": {"yes"}}}
 	cfg := &requestConfig{
@@ -267,10 +323,19 @@ func TestDigestAuthAdditionalBranches(t *testing.T) {
 	if req.Header.Get("Authorization") != "" {
 		t.Fatal("DigestAuth.Apply should be a no-op")
 	}
-	applyDigestAuth(req, DigestAuth{Username: "u", Password: "p"}, `Digest realm="r", nonce="n", qop="auth-int"`)
-	params := parseDigestChallenge(req.Header.Get("Authorization"))
-	if params["qop"] != "" || params["algorithm"] != "MD5" {
-		t.Fatalf("expected qop to be empty when auth-int is provided with MD5 algorithm, got %#v", params)
+	for _, tc := range []struct {
+		name      string
+		challenge string
+		want      string
+	}{
+		{name: "qop", challenge: `Digest realm="r", nonce="n", qop="auth-int"`, want: "unsupported digest auth qop"},
+		{name: "algorithm", challenge: `Digest realm="r", nonce="n", algorithm=SHA-256`, want: "unsupported digest auth algorithm"},
+	} {
+		t.Run("unsupported "+tc.name, func(t *testing.T) {
+			if err := applyDigestAuth(req, DigestAuth{Username: "u", Password: "p"}, tc.challenge); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected %q error, got %v", tc.want, err)
+			}
+		})
 	}
 	if got := selectDigestQOP("auth-int, auth"); got != "auth" {
 		t.Fatalf("expected auth qop, got %q", got)
@@ -459,6 +524,47 @@ func TestBuildBodyAndMultipartBranches(t *testing.T) {
 	if err := writeMultipart(w, &requestConfig{files: map[string]FileField{"file": {Content: errReader{}}}}); err == nil {
 		t.Fatal("expected file copy error")
 	}
+	if err := writeMultipart(w, &requestConfig{files: map[string]FileField{"file": {}}}); err == nil || !strings.Contains(err.Error(), "nil content") {
+		t.Fatalf("expected nil content error, got %v", err)
+	}
+}
+
+func TestMultipartCustomContentTypeEscapesDisposition(t *testing.T) {
+	fieldName := `fi"le\name`
+	fileName := `a"b\c.txt`
+	cfg := &requestConfig{
+		files: map[string]FileField{
+			fieldName: {
+				FileName:    fileName,
+				Content:     strings.NewReader("file-content"),
+				ContentType: "text/plain",
+			},
+		},
+	}
+	body, contentType, err := buildBody(cfg)
+	if err != nil {
+		t.Fatalf("buildBody failed: %v", err)
+	}
+	raw, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatalf("read multipart body failed: %v", err)
+	}
+	boundary := strings.TrimPrefix(contentType, "multipart/form-data; boundary=")
+	form, err := multipart.NewReader(bytes.NewReader(raw), boundary).ReadForm(1024)
+	if err != nil {
+		t.Fatalf("parse multipart failed: %v\n%s", err, string(raw))
+	}
+	defer form.RemoveAll()
+	files := form.File[fieldName]
+	if len(files) != 1 {
+		t.Fatalf("expected one file for %q, got %#v", fieldName, form.File)
+	}
+	if files[0].Filename != fileName {
+		t.Fatalf("unexpected filename: %q", files[0].Filename)
+	}
+	if got := files[0].Header.Get("Content-Type"); got != "text/plain" {
+		t.Fatalf("unexpected content type: %q", got)
+	}
 }
 
 func TestDigestRetryErrors(t *testing.T) {
@@ -530,6 +636,29 @@ func TestDigestRetryErrors(t *testing.T) {
 		}))
 		if _, err := s.Get("http://example.test", Auth{Provider: DigestAuth{Username: "u", Password: "p"}}); err == nil {
 			t.Fatal("expected retry read error")
+		}
+	})
+
+	t.Run("non replayable body rejected", func(t *testing.T) {
+		calls := 0
+		s := NewSession().SetRoundTripper(roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			header := make(http.Header)
+			header.Set("WWW-Authenticate", `Digest realm="test", nonce="nonce"`)
+			return &http.Response{
+				StatusCode: http.StatusUnauthorized,
+				Status:     "401 Unauthorized",
+				Header:     header,
+				Body:       io.NopCloser(strings.NewReader("unauthorized")),
+				Request:    req,
+			}, nil
+		}))
+		_, err := s.Post("http://example.test", Body{Reader: strings.NewReader("body")}, Auth{Provider: DigestAuth{Username: "u", Password: "p"}})
+		if err == nil || !strings.Contains(err.Error(), "digest auth requires replayable request body") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if calls != 1 {
+			t.Fatalf("expected one request, got %d", calls)
 		}
 	})
 }

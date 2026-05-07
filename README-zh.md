@@ -2,15 +2,15 @@
 
 <a href="README.md">English</a> | <a href="README-zh.md">中文</a>
 
-A user-friendly Go HTTP client library inspired by Python's [requests](https://requests.readthedocs.io/) library. It wraps the standard `net/http` package to provide a simpler, more expressive API.
+go-requests 是一个用户友好的 Go HTTP 客户端库，灵感来自 Python 的 [requests](https://requests.readthedocs.io/) 库。它封装了标准库 `net/http`，提供更简单、更具表现力的 API。
 
-## Installation
+## 安装
 
 ```bash
 go get github.com/shijl0925/go-requests
 ```
 
-## Quick Start
+## 快速开始
 
 ```go
 package main
@@ -32,34 +32,34 @@ func main() {
 }
 ```
 
-## Features
+## 功能特性
 
-- Simple package-level functions: `Get`, `Post`, `Put`, `Patch`, `Delete`, `Head`, `Options`
-- `Session` for persistent headers, cookies, and settings across requests
-- URL query parameters (`Params`)
-- Request headers (`Headers`)
-- JSON request body (`JSON`, `JSONBody`)
-- Form data body (`Data`)
-- Multi-value query and form fields (`ParamValues`, `DataValues`)
-- File uploads (`Files`)
-- Streaming uploads (`Body`, streamed multipart `Files`)
-- Cookie management (`Cookies`)
-- Authentication: Basic Auth, Bearer Token, Digest Auth
-- Request timeout (`Timeout`)
-- Automatic retries for replayable requests (`Retry`)
-- Redirect control (`AllowRedirects`, `MaxRedirects`)
-- TLS verification control (`Verify`)
-- Proxy support (`Proxies`)
-- Transport and connection-pool configuration (`TransportConfig`)
-- Custom HTTP clients and transports (`HTTPClient`, `RoundTripper`)
-- Context support (`WithContext`)
-- Common header shortcuts (`Header`, `UserAgent`, `Referer`, `Accept`, `ContentType`)
-- Streaming responses (`Stream`)
-- Response helpers: `.Text()`, `.JSON()`, `.JSONMap()`, `.JSONSlice()`, `.Content()`, `.SaveToFile()`, `.Ok()`, `.RaiseForStatus()`, `.IsRedirect()`
+- 简单的包级函数：`Get`、`Post`、`Put`、`Patch`、`Delete`、`Head`、`Options`
+- 使用 `Session` 在多个请求之间持久化请求头、Cookie 和设置
+- URL 查询参数（`Params`）
+- 请求头（`Headers`）
+- JSON 请求体（`JSON`、`JSONBody`）
+- 表单数据请求体（`Data`）
+- 多值查询和表单字段（`ParamValues`、`DataValues`）
+- 文件上传（`Files`）
+- 流式上传（`Body`、流式 multipart `Files`）
+- Cookie 管理（`Cookies`）
+- 身份认证：Basic Auth、Bearer Token、Digest Auth
+- 请求超时（`Timeout`）
+- 对可重放请求自动重试（`Retry`）
+- 重定向控制（`AllowRedirects`、`MaxRedirects`）
+- TLS 验证控制（`Verify`）
+- 代理支持（`Proxies`）
+- 传输层和连接池配置（`TransportConfig`）
+- 自定义 HTTP 客户端和传输器（`HTTPClient`、`RoundTripper`）
+- Context 支持（`WithContext`）
+- 常用请求头快捷方式（`Header`、`UserAgent`、`Referer`、`Accept`、`ContentType`）
+- 流式响应（`Stream`）
+- 响应辅助方法：`.Text()`、`.JSON()`、`.JSONMap()`、`.JSONSlice()`、`.Content()`、`.SaveToFile()`、`.Ok()`、`.RaiseForStatus()`、`.IsRedirect()`
 
-## Usage
+## 使用方法
 
-### GET Request
+### GET 请求
 
 ```go
 resp, err := requests.Get("https://httpbin.org/get",
@@ -68,7 +68,7 @@ resp, err := requests.Get("https://httpbin.org/get",
 )
 ```
 
-Use `ParamValues` when the same query key needs multiple values:
+当同一个查询 key 需要多个值时，使用 `ParamValues`：
 
 ```go
 resp, err := requests.Get("https://httpbin.org/get",
@@ -76,7 +76,7 @@ resp, err := requests.Get("https://httpbin.org/get",
 )
 ```
 
-### POST with JSON Body
+### 使用 JSON 请求体发送 POST
 
 ```go
 resp, err := requests.Post("https://httpbin.org/post",
@@ -84,7 +84,7 @@ resp, err := requests.Post("https://httpbin.org/post",
 )
 ```
 
-### POST with a Struct
+### 使用结构体发送 POST
 
 ```go
 type User struct {
@@ -97,7 +97,7 @@ resp, err := requests.Post("https://httpbin.org/post",
 )
 ```
 
-### POST Form Data
+### POST 表单数据
 
 ```go
 resp, err := requests.Post("https://httpbin.org/post",
@@ -105,7 +105,7 @@ resp, err := requests.Post("https://httpbin.org/post",
 )
 ```
 
-Use `DataValues` when a form field needs repeated values:
+当表单字段需要重复值时，使用 `DataValues`：
 
 ```go
 resp, err := requests.Post("https://httpbin.org/post",
@@ -113,7 +113,7 @@ resp, err := requests.Post("https://httpbin.org/post",
 )
 ```
 
-### File Upload
+### 文件上传
 
 ```go
 f, _ := os.Open("report.pdf")
@@ -129,10 +129,9 @@ resp, err := requests.Post("https://httpbin.org/post",
 )
 ```
 
-Multipart file uploads stream from the provided reader instead of buffering the
-entire file in memory.
+Multipart 文件上传会从提供的 reader 中流式读取，而不是将整个文件缓存在内存中。
 
-### Streaming POST Upload
+### 流式 POST 上传
 
 ```go
 f, _ := os.Open("large-video.mp4")
@@ -144,7 +143,7 @@ resp, err := requests.Post("https://example.com/upload",
 )
 ```
 
-### Streaming GET Download
+### 流式 GET 下载
 
 ```go
 resp, err := requests.Get("https://example.com/large-file",
@@ -158,7 +157,7 @@ defer resp.Close()
 _, err = io.Copy(dst, resp.Body())
 ```
 
-### Authentication
+### 身份认证
 
 ```go
 // Basic Auth
@@ -177,9 +176,7 @@ resp, err := requests.Get("https://httpbin.org/digest-auth/auth/user/pass",
 )
 ```
 
-Digest authentication currently supports MD5 with `qop=auth`. Servers that
-require other algorithms (for example SHA-256 or MD5-sess) or `qop=auth-int`
-return an explicit unsupported digest auth error.
+Digest 认证目前支持 MD5 和 `qop=auth`。如果服务器要求其他算法（例如 SHA-256 或 MD5-sess）或 `qop=auth-int`，会返回明确的不支持 Digest Auth 错误。
 
 ### Cookies
 
@@ -189,12 +186,9 @@ resp, err := requests.Get("https://httpbin.org/cookies",
 )
 ```
 
-Package-level convenience functions such as `requests.Get` and `requests.Post`
-share a default session, including its cookie jar. Use `requests.NewSession()`
-for isolated state, `requests.DefaultSession()` to inspect or configure the
-shared session, or `requests.ResetDefaultSession()` to clear it.
+包级便捷函数（例如 `requests.Get` 和 `requests.Post`）共享一个默认 session，包括其 cookie jar。使用 `requests.NewSession()` 获取隔离状态，使用 `requests.DefaultSession()` 查看或配置共享 session，或使用 `requests.ResetDefaultSession()` 清除它。
 
-### Timeout
+### 超时
 
 ```go
 resp, err := requests.Get("https://httpbin.org/delay/5",
@@ -202,7 +196,7 @@ resp, err := requests.Get("https://httpbin.org/delay/5",
 )
 ```
 
-### Retry
+### 重试
 
 ```go
 resp, err := requests.Get("https://api.example.com/resource",
@@ -213,11 +207,9 @@ resp, err := requests.Get("https://api.example.com/resource",
 )
 ```
 
-By default, retries apply to replayable requests and retry status codes `429`,
-`500`, `502`, `503`, and `504`. Requests with raw streaming bodies or file
-uploads are not retried automatically because their bodies may not be reusable.
+默认情况下，重试仅适用于可重放请求，并会重试状态码 `429`、`500`、`502`、`503` 和 `504`。带有原始流式请求体或文件上传的请求不会自动重试，因为它们的请求体可能无法复用。
 
-### Header Shortcuts
+### 请求头快捷方式
 
 ```go
 resp, err := requests.Get("https://api.example.com/resource",
@@ -227,7 +219,7 @@ resp, err := requests.Get("https://api.example.com/resource",
 )
 ```
 
-### Disable Redirects
+### 禁用重定向
 
 ```go
 resp, err := requests.Get("https://httpbin.org/redirect/1",
@@ -236,7 +228,7 @@ resp, err := requests.Get("https://httpbin.org/redirect/1",
 fmt.Println(resp.IsRedirect()) // true
 ```
 
-Limit redirects for a single request:
+限制单个请求的重定向次数：
 
 ```go
 resp, err := requests.Get("https://httpbin.org/redirect/3",
@@ -244,7 +236,7 @@ resp, err := requests.Get("https://httpbin.org/redirect/3",
 )
 ```
 
-### Disable TLS Verification
+### 禁用 TLS 验证
 
 ```go
 resp, err := requests.Get("https://self-signed.example.com",
@@ -252,7 +244,7 @@ resp, err := requests.Get("https://self-signed.example.com",
 )
 ```
 
-### Proxy
+### 代理
 
 ```go
 resp, err := requests.Get("https://httpbin.org/get",
@@ -260,7 +252,7 @@ resp, err := requests.Get("https://httpbin.org/get",
 )
 ```
 
-### Transport Configuration
+### 传输层配置
 
 ```go
 s := requests.NewSession()
@@ -273,7 +265,7 @@ s.SetTransportConfig(requests.TransportConfig{
 })
 ```
 
-You can also apply transport settings to a single request:
+你也可以将传输层设置应用到单个请求：
 
 ```go
 resp, err := requests.Get("https://api.example.com/resource",
@@ -281,7 +273,7 @@ resp, err := requests.Get("https://api.example.com/resource",
 )
 ```
 
-### Custom Client or RoundTripper
+### 自定义 Client 或 RoundTripper
 
 ```go
 client := &http.Client{Transport: customTransport}
@@ -290,7 +282,7 @@ resp, err := requests.Get("https://api.example.com/resource",
 )
 ```
 
-For session-wide customization:
+用于 session 级别的自定义：
 
 ```go
 s := requests.NewSession()
@@ -311,7 +303,7 @@ resp, err := requests.Get("https://httpbin.org/get",
 
 ### Session
 
-A `Session` maintains persistent headers and cookies across requests, and lets you set defaults once.
+`Session` 会在多个请求之间维护持久请求头和 Cookie，并允许你一次性设置默认值。
 
 ```go
 s := requests.NewSession()
@@ -323,7 +315,7 @@ resp1, _ := s.Get("https://api.example.com/users")
 resp2, _ := s.Get("https://api.example.com/posts")
 ```
 
-Session cookies are automatically persisted between requests:
+Session Cookie 会在请求之间自动持久化：
 
 ```go
 s := requests.NewSession()
@@ -331,7 +323,7 @@ s.Get("https://httpbin.org/cookies/set?token=abc")  // server sets cookie
 resp, _ := s.Get("https://httpbin.org/cookies")     // cookie is sent automatically
 ```
 
-### Response
+### 响应
 
 ```go
 resp, _ := requests.Get("https://httpbin.org/json")
@@ -362,23 +354,21 @@ if err := resp.RaiseForStatus(); err != nil {
 }
 ```
 
-## Testing
+## 测试
 
-Run the local unit tests:
+运行本地单元测试：
 
 ```bash
 go test ./...
 ```
 
-Run the integration tests against `https://httpbin.org`:
+运行针对 `https://httpbin.org` 的集成测试：
 
 ```bash
 go test -tags=integration ./...
 ```
 
-The integration suite is guarded by the `integration` build tag because it makes
-real network requests. Set `HTTPBIN_BASE_URL` to point at a compatible httpbin
-deployment if you do not want to use the public service:
+集成测试套件由 `integration` build tag 保护，因为它会发起真实网络请求。如果你不想使用公共服务，可以将 `HTTPBIN_BASE_URL` 设置为兼容的 httpbin 部署地址：
 
 ```bash
 HTTPBIN_BASE_URL=https://httpbin.org go test -tags=integration ./...
