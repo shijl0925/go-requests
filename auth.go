@@ -39,7 +39,7 @@ func (a TokenAuth) Apply(req *http.Request) {
 }
 
 // DigestAuth implements HTTP Digest Authentication (RFC 2617) for MD5 with
-// qop=auth.
+// optional qop=auth.
 type DigestAuth struct {
 	Username string
 	Password string

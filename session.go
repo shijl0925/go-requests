@@ -368,21 +368,25 @@ type Session struct {
 	AllowRedirects bool
 
 	// Verify controls TLS certificate verification. Defaults to true.
-	// Prefer SetVerify so the session client is rebuilt immediately.
+	// Direct changes affect future requests; SetVerify also rebuilds the
+	// cached session client immediately.
 	Verify bool
 
 	// Proxies maps scheme to proxy URL.
-	// Prefer SetProxies so the session client is rebuilt immediately.
+	// Direct changes affect future requests; SetProxies also rebuilds the
+	// cached session client immediately.
 	Proxies map[string]string
 
 	// TransportConfig configures the default HTTP transport.
-	// Prefer SetTransportConfig so the session client is rebuilt immediately.
+	// Direct changes affect future requests; SetTransportConfig also rebuilds
+	// the cached session client immediately.
 	TransportConfig *TransportConfig
 
 	// RoundTripper is the default transport used by this session. When set to a
 	// non-*http.Transport value, Verify, Proxies, and TransportConfig are not
 	// applied to it.
-	// Prefer SetRoundTripper so the session client is rebuilt immediately.
+	// Direct changes affect future requests; SetRoundTripper also rebuilds the
+	// cached session client immediately.
 	RoundTripper http.RoundTripper
 
 	// client is the underlying HTTP client.
@@ -726,7 +730,7 @@ func (s sessionSnapshot) retryDigestAuth(ctx context.Context, client *http.Clien
 		retryReq.Header[k] = vals
 	}
 	if err := applyDigestAuth(retryReq, da, wwwAuth); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("go-requests: digest auth retry: %w", err)
 	}
 	httpResp, err := client.Do(retryReq)
 	if err != nil {
@@ -1064,6 +1068,8 @@ func writeMultipart(w *multipart.Writer, cfg *requestConfig) error {
 		}
 		if ff.ContentType != "" {
 			h := make(map[string][]string)
+			// Content-Disposition uses the same parameter quoting rules handled by
+			// mime.FormatMediaType.
 			h["Content-Disposition"] = []string{mime.FormatMediaType("form-data", map[string]string{
 				"name":     fieldName,
 				"filename": filepath.Base(filename),

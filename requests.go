@@ -8,6 +8,7 @@ import (
 // defaultSession is a package-level Session used by the convenience functions.
 // It behaves like a standard Session and shares cookies and other session state
 // across all package-level convenience function calls in the same program.
+// Access and replacement are safe for concurrent callers.
 var (
 	defaultSessionMu sync.RWMutex
 	defaultSession   = NewSession()
