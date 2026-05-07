@@ -323,11 +323,19 @@ func TestDigestAuthAdditionalBranches(t *testing.T) {
 	if req.Header.Get("Authorization") != "" {
 		t.Fatal("DigestAuth.Apply should be a no-op")
 	}
-	if err := applyDigestAuth(req, DigestAuth{Username: "u", Password: "p"}, `Digest realm="r", nonce="n", qop="auth-int"`); err == nil || !strings.Contains(err.Error(), "unsupported digest auth qop") {
-		t.Fatalf("expected unsupported qop error, got %v", err)
-	}
-	if err := applyDigestAuth(req, DigestAuth{Username: "u", Password: "p"}, `Digest realm="r", nonce="n", algorithm=SHA-256`); err == nil || !strings.Contains(err.Error(), "unsupported digest auth algorithm") {
-		t.Fatalf("expected unsupported algorithm error, got %v", err)
+	for _, tc := range []struct {
+		name      string
+		challenge string
+		want      string
+	}{
+		{name: "qop", challenge: `Digest realm="r", nonce="n", qop="auth-int"`, want: "unsupported digest auth qop"},
+		{name: "algorithm", challenge: `Digest realm="r", nonce="n", algorithm=SHA-256`, want: "unsupported digest auth algorithm"},
+	} {
+		t.Run("unsupported "+tc.name, func(t *testing.T) {
+			if err := applyDigestAuth(req, DigestAuth{Username: "u", Password: "p"}, tc.challenge); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected %q error, got %v", tc.want, err)
+			}
+		})
 	}
 	if got := selectDigestQOP("auth-int, auth"); got != "auth" {
 		t.Fatalf("expected auth qop, got %q", got)

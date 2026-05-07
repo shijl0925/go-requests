@@ -847,7 +847,7 @@ func (s sessionSnapshot) buildEffectiveClient(cfg *requestConfig) *http.Client {
 	if cfg.roundTripper != nil {
 		client.Transport = cfg.roundTripper
 	} else {
-		if !s.customClient && (s.roundTripper != nil || !s.verify || len(s.proxies) > 0 || s.transport != nil) {
+		if s.needsSessionTransport() {
 			t, ok := cloneHTTPTransport(s.roundTripper)
 			if ok {
 				if !s.verify {
@@ -882,6 +882,10 @@ func (s sessionSnapshot) buildEffectiveClient(cfg *requestConfig) *http.Client {
 
 	applyRedirectPolicy(client, s.allowRedirects, cfg.allowRedirects, cfg.maxRedirects)
 	return client
+}
+
+func (s sessionSnapshot) needsSessionTransport() bool {
+	return !s.customClient && (s.roundTripper != nil || !s.verify || len(s.proxies) > 0 || s.transport != nil)
 }
 
 func cloneHTTPClient(client *http.Client) *http.Client {

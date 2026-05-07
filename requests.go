@@ -10,6 +10,8 @@ import (
 // globally across all package-level convenience function calls, including from
 // concurrent goroutines.
 // Access and replacement are safe for concurrent callers.
+// Use Session setter methods for concurrent-safe mutations of the returned
+// default session.
 var (
 	defaultSessionMu sync.RWMutex
 	defaultSession   = NewSession()
