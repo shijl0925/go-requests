@@ -464,6 +464,48 @@ func TestDigestAuthClosesInitialStreamResponse(t *testing.T) {
 	}
 }
 
+func TestDigestAuthPointerProviderAndLowercaseChallenge(t *testing.T) {
+	calls := 0
+	rt := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			header := make(http.Header)
+			header.Set("WWW-Authenticate", `digest realm="test", nonce="nonce-value"`)
+			return &http.Response{
+				StatusCode: http.StatusUnauthorized,
+				Status:     "401 Unauthorized",
+				Header:     header,
+				Body:       io.NopCloser(strings.NewReader("unauthorized")),
+				Request:    req,
+			}, nil
+		}
+		if req.Header.Get("Authorization") == "" {
+			t.Fatal("expected digest Authorization header on retry")
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("ok")),
+			Request:    req,
+		}, nil
+	})
+
+	resp, err := requests.Get("http://example.test",
+		requests.RoundTripper{Transport: rt},
+		requests.Auth{Provider: &requests.DigestAuth{Username: "user", Password: "pass"}},
+	)
+	if err != nil {
+		t.Fatalf("Get with digest auth failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if calls != 2 {
+		t.Fatalf("expected digest retry, got %d calls", calls)
+	}
+}
+
 func TestResponseOk(t *testing.T) {
 	srv, baseURL := newTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -1124,6 +1166,37 @@ func TestHeadersContentTypeOverridesAutomaticBodyContentType(t *testing.T) {
 	}
 	if resp.Text() != "application/vnd.example+json; charset=utf-8" {
 		t.Fatalf("unexpected Content-Type: %q", resp.Text())
+	}
+}
+
+func TestSessionHeadersPreserveMultipleValues(t *testing.T) {
+	srv, baseURL := newTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(r.Header.Values("Accept"))
+	}))
+	defer srv.Close()
+
+	s := requests.NewSession()
+	s.Headers.Del("Accept")
+	s.Headers.Add("Accept", "text/plain")
+	s.Headers.Add("Accept", "application/json")
+
+	resp, err := s.Get(baseURL)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	var got []string
+	if err := resp.JSON(&got); err != nil {
+		t.Fatalf("JSON decode failed: %v", err)
+	}
+	want := []string{"text/plain", "application/json"}
+	if len(got) != len(want) {
+		t.Fatalf("unexpected Accept values: got %#v want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("unexpected Accept values: got %#v want %#v", got, want)
+		}
 	}
 }
 
