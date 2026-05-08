@@ -208,6 +208,7 @@ resp, err := requests.Get("https://api.example.com/resource",
 ```
 
 默认情况下，重试仅适用于可重放请求，并会重试状态码 `429`、`500`、`502`、`503` 和 `504`。带有原始流式请求体或文件上传的请求不会自动重试，因为它们的请求体可能无法复用。
+如果 `Retry.Methods` 为空，任何可重放方法都可能被重试，包括 `POST`、`PATCH` 和 `DELETE` 等非幂等方法。对于自动重试可能重复副作用的 API，请显式设置 `Retry.Methods`。
 
 ### 请求头快捷方式
 
@@ -251,6 +252,8 @@ resp, err := requests.Get("https://httpbin.org/get",
     requests.Proxies{"https": "http://proxy.example.com:8080"},
 )
 ```
+
+配置 `Proxies` map 后，只有 map 中存在的 scheme 会使用代理。map 中未指定的 scheme 会绕过代理查找，包括环境变量中的代理配置。
 
 ### 传输层配置
 
@@ -353,6 +356,8 @@ if err := resp.RaiseForStatus(); err != nil {
     log.Fatal(err)
 }
 ```
+
+非流式响应会在返回前读取并缓存响应体，然后关闭底层 `RawResponse.Body`；此类响应请使用 `Text`、`Content` 或 `JSON`。`Body()` 主要用于 `Stream(true)` 响应。对流式响应调用 `SaveToFile` 会消费并关闭该流，且不会缓存内容，因此后续调用 `Content`、`Text` 或 `JSON` 时将没有剩余响应体可读。
 
 ## 测试
 

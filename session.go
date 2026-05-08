@@ -645,9 +645,9 @@ func (s *Session) request(method, rawURL string, opts []Option) (*Response, erro
 
 		// Handle Digest Auth retry on 401.
 		if resp.StatusCode == http.StatusUnauthorized {
-			if da, ok := auth.(DigestAuth); ok {
+			if da, ok := digestAuthFromProvider(auth); ok {
 				wwwAuth := httpResp.Header.Get("WWW-Authenticate")
-				if strings.HasPrefix(wwwAuth, "Digest ") {
+				if isDigestChallenge(wwwAuth) {
 					if err := resp.Close(); err != nil {
 						return nil, fmt.Errorf("go-requests: close digest challenge response: %w", err)
 					}
@@ -691,9 +691,7 @@ func (s sessionSnapshot) newHTTPRequest(ctx context.Context, method, rawURL stri
 	}
 
 	for k, vals := range s.headers {
-		for _, v := range vals {
-			req.Header.Set(k, v)
-		}
+		setHeaderValues(req.Header, k, vals)
 	}
 	// Apply automatic body Content-Type after session headers but before
 	// per-request Headers, so callers can override it.
@@ -702,9 +700,7 @@ func (s sessionSnapshot) newHTTPRequest(ctx context.Context, method, rawURL stri
 	}
 	if cfg.headers != nil {
 		for k, vals := range cfg.headers {
-			for _, v := range vals {
-				req.Header.Set(k, v)
-			}
+			setHeaderValues(req.Header, k, vals)
 		}
 	}
 	if cfg.contentType != "" {
@@ -719,6 +715,13 @@ func (s sessionSnapshot) newHTTPRequest(ctx context.Context, method, rawURL stri
 	}
 
 	return req, nil
+}
+
+func setHeaderValues(header http.Header, key string, values []string) {
+	header.Del(key)
+	for _, value := range values {
+		header.Add(key, value)
+	}
 }
 
 func (s sessionSnapshot) retryDigestAuth(ctx context.Context, client *http.Client, req *http.Request, method, rawURL string, cfg *requestConfig, da DigestAuth, wwwAuth string, start time.Time) (*Response, error) {

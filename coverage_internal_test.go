@@ -352,6 +352,28 @@ func TestDigestAuthAdditionalBranches(t *testing.T) {
 	}
 }
 
+func TestNewHTTPRequestPreservesRequestHeaderValues(t *testing.T) {
+	s := sessionSnapshot{
+		headers: http.Header{"Accept": {"session"}},
+	}
+	req, err := s.newHTTPRequest(context.Background(), http.MethodGet, "http://example.test", &requestConfig{
+		headers: http.Header{"Accept": {"text/plain", "application/json"}},
+	}, nil)
+	if err != nil {
+		t.Fatalf("newHTTPRequest failed: %v", err)
+	}
+	got := req.Header.Values("Accept")
+	want := []string{"text/plain", "application/json"}
+	if len(got) != len(want) {
+		t.Fatalf("unexpected Accept values: got %#v want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("unexpected Accept values: got %#v want %#v", got, want)
+		}
+	}
+}
+
 func TestRetryHelpers(t *testing.T) {
 	if retryMaxAttempts(nil) != 1 || retryMaxAttempts(&Retry{MaxRetries: -1}) != 1 || retryMaxAttempts(&Retry{MaxRetries: 2}) != 3 {
 		t.Fatal("unexpected max attempts")

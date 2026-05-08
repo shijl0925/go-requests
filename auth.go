@@ -51,6 +51,20 @@ type DigestAuth struct {
 // handshake.
 func (a DigestAuth) Apply(_ *http.Request) {}
 
+func digestAuthFromProvider(auth AuthProvider) (DigestAuth, bool) {
+	switch a := auth.(type) {
+	case DigestAuth:
+		return a, true
+	case *DigestAuth:
+		if a == nil {
+			return DigestAuth{}, false
+		}
+		return *a, true
+	default:
+		return DigestAuth{}, false
+	}
+}
+
 // applyDigestAuth performs the second step of Digest auth using the challenge
 // contained in the 401 response header.
 //
@@ -86,17 +100,32 @@ func applyDigestAuth(req *http.Request, a DigestAuth, wwwAuthenticate string) er
 	}
 
 	header := fmt.Sprintf(
-		`Digest username="%s", realm="%s", nonce="%s", uri="%s", algorithm=%s, response="%s"`,
-		a.Username, realm, nonce, uri, algorithm, response,
+		`Digest username=%s, realm=%s, nonce=%s, uri=%s, algorithm=%s, response=%s`,
+		digestQuotedString(a.Username), digestQuotedString(realm), digestQuotedString(nonce),
+		digestQuotedString(uri), algorithm, digestQuotedString(response),
 	)
 	if params["opaque"] != "" {
-		header += fmt.Sprintf(`, opaque="%s"`, params["opaque"])
+		header += fmt.Sprintf(`, opaque=%s`, digestQuotedString(params["opaque"]))
 	}
 	if qop == "auth" {
-		header += fmt.Sprintf(`, qop=%s, nc=%s, cnonce="%s"`, qop, nonceCount, cnonce)
+		header += fmt.Sprintf(`, qop=%s, nc=%s, cnonce=%s`, qop, nonceCount, digestQuotedString(cnonce))
 	}
 	req.Header.Set("Authorization", header)
 	return nil
+}
+
+func digestQuotedString(s string) string {
+	var b strings.Builder
+	b.Grow(len(s) + 2)
+	b.WriteByte('"')
+	for _, r := range s {
+		if r == '\\' || r == '"' {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	b.WriteByte('"')
+	return b.String()
 }
 
 func md5sum(s string) string {
@@ -123,7 +152,7 @@ func newDigestCNonce() string {
 
 func parseDigestChallenge(header string) map[string]string {
 	params := make(map[string]string)
-	header = strings.TrimPrefix(header, "Digest ")
+	header = trimDigestScheme(header)
 	for _, part := range splitDigestChallenge(header) {
 		part = strings.TrimSpace(part)
 		kv := strings.SplitN(part, "=", 2)
@@ -131,10 +160,51 @@ func parseDigestChallenge(header string) map[string]string {
 			continue
 		}
 		key := strings.TrimSpace(kv[0])
-		value := strings.Trim(strings.TrimSpace(kv[1]), `"`)
+		value := parseDigestValue(kv[1])
 		params[key] = value
 	}
 	return params
+}
+
+func isDigestChallenge(header string) bool {
+	scheme, rest, ok := strings.Cut(strings.TrimSpace(header), " ")
+	return ok && strings.EqualFold(scheme, "Digest") && strings.TrimSpace(rest) != ""
+}
+
+func trimDigestScheme(header string) string {
+	header = strings.TrimSpace(header)
+	scheme, rest, ok := strings.Cut(header, " ")
+	if ok && strings.EqualFold(scheme, "Digest") {
+		return strings.TrimSpace(rest)
+	}
+	return header
+}
+
+func parseDigestValue(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) < 2 || value[0] != '"' || value[len(value)-1] != '"' {
+		return value
+	}
+	value = value[1 : len(value)-1]
+	var b strings.Builder
+	b.Grow(len(value))
+	escaped := false
+	for _, r := range value {
+		if escaped {
+			b.WriteRune(r)
+			escaped = false
+			continue
+		}
+		if r == '\\' {
+			escaped = true
+			continue
+		}
+		b.WriteRune(r)
+	}
+	if escaped {
+		b.WriteByte('\\')
+	}
+	return b.String()
 }
 
 func splitDigestChallenge(header string) []string {

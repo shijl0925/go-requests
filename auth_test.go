@@ -70,3 +70,39 @@ func TestParseDigestChallengeQuotedComma(t *testing.T) {
 		t.Fatalf("unexpected algorithm: %q", params["algorithm"])
 	}
 }
+
+func TestParseDigestChallengeCaseInsensitiveScheme(t *testing.T) {
+	params := parseDigestChallenge(`digest realm="example", nonce="nonce-value"`)
+
+	if params["realm"] != "example" {
+		t.Fatalf("unexpected realm: %q", params["realm"])
+	}
+	if !isDigestChallenge(`DIGEST realm="example", nonce="nonce-value"`) {
+		t.Fatal("expected case-insensitive Digest challenge match")
+	}
+}
+
+func TestApplyDigestAuthEscapesQuotedStringValues(t *testing.T) {
+	req, err := http.NewRequest(http.MethodGet, `https://example.com/a"b\c`, nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+
+	if err := applyDigestAuth(req, DigestAuth{Username: `u"ser\name`, Password: "pass"}, `Digest realm="r\"ealm\\x", nonce="n\"once", opaque="op\\aque"`); err != nil {
+		t.Fatalf("applyDigestAuth failed: %v", err)
+	}
+
+	params := parseDigestChallenge(req.Header.Get("Authorization"))
+	if params["username"] != `u"ser\name` {
+		t.Fatalf("unexpected username: %q", params["username"])
+	}
+	if params["realm"] != `r"ealm\x` {
+		t.Fatalf("unexpected realm: %q", params["realm"])
+	}
+	if params["nonce"] != `n"once` {
+		t.Fatalf("unexpected nonce: %q", params["nonce"])
+	}
+	if params["opaque"] != `op\aque` {
+		t.Fatalf("unexpected opaque: %q", params["opaque"])
+	}
+}

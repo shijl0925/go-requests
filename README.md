@@ -216,6 +216,10 @@ resp, err := requests.Get("https://api.example.com/resource",
 By default, retries apply to replayable requests and retry status codes `429`,
 `500`, `502`, `503`, and `504`. Requests with raw streaming bodies or file
 uploads are not retried automatically because their bodies may not be reusable.
+If `Retry.Methods` is empty, any replayable method may be retried, including
+non-idempotent methods such as `POST`, `PATCH`, and `DELETE`. Set
+`Retry.Methods` explicitly for APIs where automatic retries could repeat
+side effects.
 
 ### Header Shortcuts
 
@@ -259,6 +263,10 @@ resp, err := requests.Get("https://httpbin.org/get",
     requests.Proxies{"https": "http://proxy.example.com:8080"},
 )
 ```
+
+When a `Proxies` map is configured, only schemes present in the map use a
+proxy. Schemes omitted from the map bypass proxy lookup, including environment
+proxy variables.
 
 ### Transport Configuration
 
@@ -361,6 +369,12 @@ if err := resp.RaiseForStatus(); err != nil {
     log.Fatal(err)
 }
 ```
+
+Non-streaming responses read and cache the body before returning, then close the
+underlying `RawResponse.Body`; use `Text`, `Content`, or `JSON` for those
+responses. `Body()` is intended for `Stream(true)` responses. Saving a streamed
+response with `SaveToFile` consumes and closes the stream without caching it, so
+subsequent `Content`, `Text`, or `JSON` calls have no body left to read.
 
 ## Testing
 
