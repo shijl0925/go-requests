@@ -372,8 +372,10 @@ if err := resp.RaiseForStatus(); err != nil {
 
 Non-streaming responses read and cache the body before returning, then close the
 underlying `RawResponse.Body`; use `Text`, `Content`, or `JSON` for those
-responses. `Body()` is intended for `Stream(true)` responses. Saving a streamed
-response with `SaveToFile` consumes and closes the stream without caching it, so
+responses. `Content` and `Text` return cached bytes and do not expose body read
+errors; use `ReadContent` or `JSON` when callers need to handle read errors.
+`Body()` is intended for `Stream(true)` responses. Saving a streamed response
+with `SaveToFile` consumes and closes the stream without caching it, so
 subsequent `Content`, `Text`, or `JSON` calls have no body left to read.
 
 ## Testing
