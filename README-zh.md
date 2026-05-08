@@ -357,7 +357,7 @@ if err := resp.RaiseForStatus(); err != nil {
 }
 ```
 
-非流式响应会在返回前读取并缓存响应体，然后关闭底层 `RawResponse.Body`；此类响应请使用 `Text`、`Content` 或 `JSON`。`Body()` 主要用于 `Stream(true)` 响应。对流式响应调用 `SaveToFile` 会消费并关闭该流，且不会缓存内容，因此后续调用 `Content`、`Text` 或 `JSON` 时将没有剩余响应体可读。
+非流式响应会在返回前读取并缓存响应体，然后关闭底层 `RawResponse.Body`；此类响应请使用 `Text`、`Content` 或 `JSON`。`Content` 和 `Text` 返回缓存字节且不会暴露响应体读取错误；调用方需要处理读取错误时，请使用 `ReadContent` 或 `JSON`。`Body()` 主要用于 `Stream(true)` 响应。对流式响应调用 `SaveToFile` 会消费并关闭该流，且不会缓存内容，因此后续调用 `Content`、`Text` 或 `JSON` 时将没有剩余响应体可读。
 
 ## 测试
 

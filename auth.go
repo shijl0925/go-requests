@@ -47,8 +47,8 @@ type DigestAuth struct {
 
 // Apply is a no-op at request-build time; digest auth requires the server's
 // WWW-Authenticate challenge. Use Session.SetAuth or pass DigestAuth via
-// WithAuth — the Session will automatically retry on 401 to complete the
-// handshake.
+// Auth{Provider: ...} — the Session will automatically retry on 401 to
+// complete the handshake.
 func (a DigestAuth) Apply(_ *http.Request) {}
 
 func digestAuthFromProvider(auth AuthProvider) (DigestAuth, bool) {

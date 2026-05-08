@@ -110,7 +110,8 @@ func (r *Response) ReadContent() ([]byte, error) {
 	return r.body, nil
 }
 
-// Content returns the response body as a byte slice.
+// Content returns the response body as a byte slice. Use ReadContent or JSON if
+// callers need to observe body read errors.
 func (r *Response) Content() []byte {
 	if !r.bodyRead {
 		body, err := r.ReadContent()
@@ -121,7 +122,8 @@ func (r *Response) Content() []byte {
 	return r.body
 }
 
-// Text returns the response body as a string.
+// Text returns the response body as a string. Use ReadContent or JSON if
+// callers need to observe body read errors.
 func (r *Response) Text() string {
 	return string(r.Content())
 }
@@ -151,7 +153,8 @@ func (r *Response) JSONSlice() ([]interface{}, error) {
 }
 
 // SaveToFile writes the response body to path. For streaming responses this
-// consumes and closes the underlying response body.
+// consumes and closes the underlying response body without caching it, so
+// subsequent Content, Text, or JSON calls have no body left to read.
 func (r *Response) SaveToFile(path string) error {
 	if r.bodyRead {
 		return os.WriteFile(path, r.body, 0o600)
